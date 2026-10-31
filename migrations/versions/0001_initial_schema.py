@@ -202,8 +202,8 @@ def upgrade() -> None:
         unique=False,
     )
 
-    # --- watch_keys.active_watch_count: DB trigger ilə saxlanılır (əl ilə yenilənmir) ---
-    # Əvvəlki dizaynda sayğac tətbiq kodunda yenilənməli idi və sürüşürdü. Trigger bunu aradan qaldırır.
+    # --- watch_keys.active_watch_count: maintained by DB triggers (never updated by hand) ---
+    # In the earlier design the counter had to be updated in application code and it drifted. Triggers remove that problem.
     op.execute(
         """
         CREATE FUNCTION watches_sync_active_count() RETURNS trigger AS $$

@@ -29,13 +29,13 @@ def quiet_settings(settings):
 async def test_notification_created_in_quiet_hours_is_held_until_morning(sm, settings):
     u = await make_user(sm, 1)
     await make_watch(sm, u, key(), 500)
-    clock = MutableClock(datetime(2026, 11, 1, 21, 30, tzinfo=UTC))  # Bakı 01:30
+    clock = MutableClock(datetime(2026, 11, 1, 21, 30, tzinfo=UTC))  # Baku 01:30
     p = Poller(sm, ScriptedProvider(100), quiet_settings(settings), clock=clock)
     await p.run_once()
     r = (await rows(sm, "select status, available_at from notifications"))[0]
     assert r.status == "pending"
-    assert r.available_at.astimezone(UTC) >= datetime(2026, 11, 2, 4, 0, tzinfo=UTC)  # Bakı 08:00
-    # broadcaster onu hələ göndərmir (real saat "indi"-dir, available_at isə gələcəkdə)
+    assert r.available_at.astimezone(UTC) >= datetime(2026, 11, 2, 4, 0, tzinfo=UTC)  # Baku 08:00
+    # the broadcaster does not send it yet (the real clock is "now", available_at is in the future)
     async with sm.begin() as s:
         await s.execute(text("UPDATE notifications SET available_at = now() + interval '5 hours'"))
     from redis.asyncio import Redis
@@ -51,7 +51,7 @@ async def test_notification_created_in_quiet_hours_is_held_until_morning(sm, set
 async def test_notification_outside_quiet_hours_is_immediate(sm, settings):
     u = await make_user(sm, 1)
     await make_watch(sm, u, key(), 500)
-    clock = MutableClock(datetime(2026, 11, 1, 10, 0, tzinfo=UTC))  # Bakı 14:00
+    clock = MutableClock(datetime(2026, 11, 1, 10, 0, tzinfo=UTC))  # Baku 14:00
     await Poller(sm, ScriptedProvider(100), quiet_settings(settings), clock=clock).run_once()
     assert await scalar(sm, "select available_at = :t from notifications", t=clock.now) is True
 
@@ -95,7 +95,7 @@ async def test_broadcast_renders_management_row_in_user_language(sm, redis, sett
     assert "marker=794979.n" in markup.inline_keyboard[0][0].url
 
 
-# ------------------------------------------------------------------- hədəfi yeniləmək
+# ------------------------------------------------------------------- updating the target
 async def test_update_target_rearms_and_schedules_immediate_check_if_already_cheap(sm):
     u = await make_user(sm, 1)
     wid = await make_watch(sm, u, key(), 100)
@@ -119,7 +119,7 @@ async def test_update_target_rejects_foreign_watch(sm):
     assert await scalar(sm, "select target_price from watches") == Decimal("100.00")
 
 
-# ---------------------------------------------------------------- explore: keş/singleflight
+# ---------------------------------------------------------------- explore: cache/singleflight
 class SlowExplore(ScriptedProvider):
     async def explore(self, **kw):
         await asyncio.sleep(0.3)
@@ -134,7 +134,7 @@ async def test_explore_is_cached_and_coalesced(redis):
     results = await asyncio.gather(*(cp.explore(**args) for _ in range(8)))
     assert inner.explore_calls == 1 and all(r[0].destination == "IST" for r in results)
     await cp.explore(**args)
-    assert inner.explore_calls == 1  # keşdən
+    assert inner.explore_calls == 1  # from the cache
     assert 0 < await redis.ttl("explore:GYD:2026-12:USD:0") <= 3600
     await cp.explore(**args, fresh=True)
     assert inner.explore_calls == 2
@@ -153,7 +153,7 @@ async def test_explore_cache_key_separates_origin_month_currency_and_direct(redi
     assert inner.explore_calls == 5
 
 
-# ------------------------------------------------------------------- ad həlli (Redis)
+# ------------------------------------------------------------------- name resolution (Redis)
 async def test_names_loaded_once_cached_in_redis_and_failure_does_not_break(redis):
     calls = []
 
@@ -168,12 +168,12 @@ async def test_names_loaded_once_cached_in_redis_and_failure_does_not_break(redi
     assert await redis.exists(REDIS_KEY) and await redis.ttl(REDIS_KEY) > 6 * 24 * 3600
     await names.lookup("KUL", "ru")
     assert len(calls) == 1
-    other = PlaceNames(redis, http, remote=True)  # başqa replika: Redis-dən oxuyur, şəbəkəyə getmir
+    other = PlaceNames(redis, http, remote=True)  # another replica: reads from Redis, doesn't hit the network
     assert (await other.lookup("KUL", "az")).name == "Kuala Lumpur" and len(calls) == 1
 
     await redis.flushdb()
     broken = PlaceNames(
         redis, httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500))), remote=True
     )
-    assert (await broken.lookup("KUL", "az")).name == "KUL"  # sınmır, kodu göstərir
+    assert (await broken.lookup("KUL", "az")).name == "KUL"  # doesn't break, shows the code
     assert (await broken.lookup("IST", "az")).name == "İstanbul"

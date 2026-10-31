@@ -46,7 +46,7 @@ async def test_price_below_target_creates_exactly_one_outbox_notification(sm, se
     assert w.armed is False and w.last_notified_price == Decimal("100.00")
     assert await scalar(sm, "select last_price from watch_keys") == Decimal("100.00")
     assert await scalar(sm, "select count(*) from price_points") == 1
-    # açar növbəti yoxlamaya planlaşdırılıb və lease buraxılıb
+    # the key is scheduled for the next check and the lease is released
     r = (
         await rows(
             sm, "select next_check_at > now() as later, lease_until, consecutive_failures from watch_keys"
@@ -60,20 +60,20 @@ async def test_price_above_target_does_not_notify(sm, settings):
     await make_watch(sm, u, key(), 100)
     await poller(sm, ScriptedProvider(150), settings).run_once()
     assert await notif_count(sm) == 0
-    assert await scalar(sm, "select count(*) from price_points") == 1  # tarixçə yenə yazılır
+    assert await scalar(sm, "select count(*) from price_points") == 1  # history is still written
 
 
 async def test_many_subscribers_one_provider_call_correct_fanout(sm, settings):
-    """800 abunəlik = 1 API sorğusu. Burada 30 istifadəçi, müxtəlif hədəflər."""
+    """800 subscriptions = 1 API request. Here: 30 users with different targets."""
     k = key()
     for i in range(30):
         u = await make_user(sm, 1000 + i)
-        await make_watch(sm, u, k, 100 + i * 10)  # hədəflər 100..390
+        await make_watch(sm, u, k, 100 + i * 10)  # targets 100..390
     prov = ScriptedProvider(205)
     await poller(sm, prov, settings).run_once()
     assert prov.calls == 1
     assert await scalar(sm, "select count(*) from watch_keys") == 1
-    assert await notif_count(sm) == 19  # hədəfi >= 205 olanlar: 210, 220, ..., 390
+    assert await notif_count(sm) == 19  # those with a target >= 205: 210, 220, ..., 390
 
 
 async def test_same_price_on_next_poll_does_not_duplicate(sm, settings):
@@ -97,7 +97,7 @@ async def test_rearm_then_second_drop_notifies_after_cooldown(sm, settings):
     assert await notif_count(sm) == 1
 
     clock.now += timedelta(hours=7)
-    prov.set(150)  # hədəfdən yuxarı -> yenidən silahlanır
+    prov.set(150)  # above the target -> re-armed
     await make_due(sm)
     await p.run_once()
     assert await scalar(sm, "select armed from watches") is True
@@ -136,7 +136,7 @@ async def test_further_5_percent_drop_notifies_again_after_cooldown(sm, settings
     p = poller(sm, prov, settings, clock)
     await p.run_once()
     clock.now += timedelta(hours=7)
-    prov.set(94)  # 100-dən ≥5% ucuz
+    prov.set(94)  # at least 5% cheaper than 100
     await make_due(sm)
     await p.run_once()
     assert await notif_count(sm) == 2
@@ -149,7 +149,7 @@ async def test_daily_limit_for_free_users(sm, settings):
         await make_watch(sm, u, k, 500)
     third = key(dest="TBS")
     await make_watch(sm, u, third, 500)
-    # 4-cü açar üçün kvota lazım olduğundan pro-ya yüksəldib 4 açar yaradırıq
+    # a 4th key needs quota, so upgrade to pro and create 4 keys
     async with sm.begin() as s:
         await s.execute(text("UPDATE users SET plan='pro'"))
     await make_watch(sm, u, key(dest="LON"), 500)
@@ -157,7 +157,7 @@ async def test_daily_limit_for_free_users(sm, settings):
         await s.execute(text("UPDATE users SET plan='free', plan_expires_at=NULL"))
 
     await poller(sm, ScriptedProvider(100), settings).run_once()
-    assert await notif_count(sm) == 3  # Free: gündə 3
+    assert await notif_count(sm) == 3  # Free: 3 per day
     assert await scalar(sm, "select count(*) from notifications where user_id=:u", u=u) == 3
 
 
@@ -179,7 +179,7 @@ async def test_pro_watcher_makes_key_poll_faster(sm, settings):
     )
     by = {x.destination: float(x.h) for x in r}
     assert 0.8 <= by["DXB"] <= 1.2  # Pro: ~1 saat
-    assert 5.0 <= by["IST"] <= 6.7  # Free (20 gün): ~6 saat
+    assert 5.0 <= by["IST"] <= 6.7  # Free (20 days): ~6 hours
 
 
 async def test_blocked_users_are_not_evaluated(sm, settings):
@@ -210,7 +210,7 @@ async def test_provider_error_backs_off_and_counts_failure(sm, settings):
             "select consecutive_failures as f, lease_until, extract(epoch from (next_check_at - now())) as s from watch_keys",
         )
     )[0]
-    assert r.f == 1 and r.lease_until is None and 200 <= float(r.s) <= 400  # ~5 dəq
+    assert r.f == 1 and r.lease_until is None and 200 <= float(r.s) <= 400  # ~5 min
     assert await notif_count(sm) == 0
 
 
@@ -259,7 +259,7 @@ async def test_unexpected_exception_does_not_wedge_key(sm, settings):
 
 
 async def test_skip_locked_two_claimers_get_disjoint_keys(sm):
-    """İki worker eyni anda: eyni açarı iki dəfə götürməməlidir (SKIP LOCKED)."""
+    """Two workers at the same time must not claim the same key (SKIP LOCKED)."""
     for i in range(10):
         u = await make_user(sm, 100 + i)
         await make_watch(
@@ -270,7 +270,7 @@ async def test_skip_locked_two_claimers_get_disjoint_keys(sm):
     try:
         async with a.begin():
             first = await claim_due_keys(a, limit=6, lease_s=300)
-            async with b.begin():  # a hələ commit etməyib: onun sətirləri kilidlidir
+            async with b.begin():  # a hasn't committed yet: its rows are locked
                 second = await claim_due_keys(b, limit=6, lease_s=300)
         ids_a, ids_b = {c.id for c in first}, {c.id for c in second}
         assert len(ids_a) == 6 and len(ids_b) == 4
@@ -288,7 +288,7 @@ async def test_leased_key_is_not_claimed_again_until_lease_expires(sm):
         assert len(await claim_due_keys(s, limit=5, lease_s=300)) == 1
     async with sm.begin() as s:
         assert await claim_due_keys(s, limit=5, lease_s=300) == []
-    async with sm.begin() as s:  # worker çöküb: lease bitir
+    async with sm.begin() as s:  # the worker crashed: the lease expires
         await s.execute(text("UPDATE watch_keys SET lease_until = now() - interval '1 second'"))
     async with sm.begin() as s:
         assert len(await claim_due_keys(s, limit=5, lease_s=300)) == 1
@@ -310,15 +310,15 @@ async def test_two_pollers_concurrently_do_not_duplicate_notifications(sm, setti
         await make_watch(sm, u, key(), 500)
     prov1, prov2 = ScriptedProvider(100), ScriptedProvider(100)
     await asyncio.gather(poller(sm, prov1, settings).run_once(), poller(sm, prov2, settings).run_once())
-    assert prov1.calls + prov2.calls == 1  # 1 açar = 1 sorğu
+    assert prov1.calls + prov2.calls == 1  # 1 key = 1 request
     assert await notif_count(sm) == 15
 
 
-# ------------------------------------------------------------- anomaliya qoruması
+# ------------------------------------------------------------- anomaly protection
 async def test_anomalous_low_price_is_confirmed_by_fresh_second_request(sm, settings):
     u = await make_user(sm, 1)
     await make_watch(sm, u, key(), 500)
-    await seed_history(sm, 1, 200)  # median 200 -> 70 şübhəlidir (< 80)
+    await seed_history(sm, 1, 200)  # median 200 -> 70 is suspicious (< 80)
     prov = ScriptedProvider(70, 70)
     await poller(sm, prov, settings).run_once()
     assert prov.calls == 2 and prov.fresh_calls == 1
@@ -329,11 +329,11 @@ async def test_anomaly_not_confirmed_is_dropped_and_not_stored(sm, settings):
     u = await make_user(sm, 1)
     await make_watch(sm, u, key(), 500)
     await seed_history(sm, 1, 200)
-    prov = ScriptedProvider(70, 190)  # ikinci sorğu normal qiymət verir
+    prov = ScriptedProvider(70, 190)  # the second request returns a normal price
     await poller(sm, prov, settings).run_once()
     assert await scalar(sm, "select count(*) from price_points where price = 70") == 0
     assert await scalar(sm, "select count(*) from price_points where price = 190") == 1
-    assert await notif_count(sm) == 1  # 190 <= hədəf 500: real qiymət haqqında normal bildiriş
+    assert await notif_count(sm) == 1  # 190 <= target 500: a normal notification about the real price
 
 
 async def test_anomaly_with_no_second_result_blocks_alert_and_history(sm, settings):
@@ -344,7 +344,7 @@ async def test_anomaly_with_no_second_result_blocks_alert_and_history(sm, settin
     await poller(sm, prov, settings).run_once()
     assert await notif_count(sm) == 0
     assert await scalar(sm, "select count(*) from price_points where price = 70") == 0
-    assert await scalar(sm, "select last_price from watch_keys") is None  # şübhəli qiymət saxlanmır
+    assert await scalar(sm, "select last_price from watch_keys") is None  # the suspicious price is not stored
 
 
 async def test_price_history_deduplicates_unchanged_prices(sm, settings):
@@ -377,11 +377,13 @@ async def test_month_mode_payload_has_window_and_cheapest_day(sm, settings):
 
 
 async def test_notification_dedup_key_prevents_duplicate_on_replayed_transaction(sm, settings):
-    """Eyni (watch, qiymət, gün) üçün DB səviyyəsində ikinci bildiriş mümkün deyil."""
+    """A second notification for the same (watch, price, day) is impossible at the DB level."""
     u = await make_user(sm, 1)
     await make_watch(sm, u, key(), 500)
     await poller(sm, ScriptedProvider(100), settings).run_once()
-    async with sm.begin() as s:  # state-i əl ilə geri qaytar: "poller crash edib state yazmayıb" ssenarisi
+    async with (
+        sm.begin() as s
+    ):  # manually roll the state back: the "poller crashed without writing the state" scenario
         await s.execute(
             text("UPDATE watches SET armed=true, last_notified_price=NULL, last_notified_at=NULL")
         )
@@ -412,7 +414,7 @@ async def test_redis_outage_delays_key_without_counting_failure(sm, settings):
     u = await make_user(sm, 1)
     await make_watch(sm, u, key(), 500)
     await poller(sm, ScriptedProvider(RedisConnectionError("down")), settings).run_once()
-    assert await scalar(sm, "select consecutive_failures from watch_keys") == 0  # backoff şişmir
+    assert await scalar(sm, "select consecutive_failures from watch_keys") == 0  # backoff does not inflate
     assert await scalar(sm, "select lease_until from watch_keys") is None
     assert (
         30

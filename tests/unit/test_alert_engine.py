@@ -28,7 +28,7 @@ def inp(**kw) -> AlertInput:
 
 def test_notify_when_at_or_below_target():
     assert decide(inp()).verdict is Verdict.NOTIFY
-    assert decide(inp(price=D("120"))).verdict is Verdict.NOTIFY  # <= (bərabər də)
+    assert decide(inp(price=D("120"))).verdict is Verdict.NOTIFY  # <= (equal counts too)
 
 
 def test_above_target_does_not_notify():
@@ -74,7 +74,7 @@ def test_daily_limit():
 
 def test_stale_quote_is_ignored_entirely():
     d = decide(inp(found_at=NOW - timedelta(hours=49), armed=False, price=D("500")))
-    assert d.verdict is Verdict.STALE and not d.rearm  # köhnə qiymət rearm də etməməlidir
+    assert d.verdict is Verdict.STALE and not d.rearm  # a stale price must not re-arm either
 
 
 def test_fresh_quote_within_48h_ok():
@@ -82,7 +82,7 @@ def test_fresh_quote_within_48h_ok():
 
 
 def test_anomaly_needs_confirmation():
-    low = dict(price=D("70"), stats=RELIABLE)  # 200*0.4 = 80 -> 70 şübhəli
+    low = dict(price=D("70"), stats=RELIABLE)  # 200*0.4 = 80 -> 70 is suspicious
     assert decide(inp(**low)).verdict is Verdict.NEEDS_CONFIRMATION
     assert decide(inp(confirmed=True, **low)).verdict is Verdict.NOTIFY
 

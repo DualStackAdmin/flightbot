@@ -1,4 +1,4 @@
-"""Qiymət tarixçəsi statistikası (median, aşağı 20%)."""
+"""Price history statistics (median, lowest 20%)."""
 
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -34,7 +34,7 @@ async def load_price_stats(session: AsyncSession, key_id: int, now: datetime) ->
 
 
 async def key_price_stats(session: AsyncSession, key: WatchKey, now: datetime) -> PriceStats:
-    """Açar artıq bazada varsa onun statistikası (yeni açar üçün boş). Açar YARATMIR."""
+    """Stats for a key if it already exists in the database (empty for a new key). Does NOT create the key."""
     key_id = (
         await session.execute(
             select(WatchKeyRow.id).where(

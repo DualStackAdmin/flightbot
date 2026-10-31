@@ -1,6 +1,6 @@
-"""Worker prosesi: `python -m flightbot.workers [--roles poller,broadcaster,janitor]`.
+"""Worker process: `python -m flightbot.workers [--roles poller,broadcaster,janitor]`.
 
-Bütün rollar SKIP LOCKED ilə işləyir, ona görə istənilən sayda replika təhlükəsizdir.
+All roles work via SKIP LOCKED, so any number of replicas is safe.
 """
 
 import argparse
@@ -53,7 +53,7 @@ async def amain(roles: set[str]) -> None:
         if "broadcaster" in roles:
             token = settings.bot_token.get_secret_value()
             if not token:
-                raise RuntimeError("broadcaster üçün BOT_TOKEN təyin edilməlidir")
+                raise RuntimeError("BOT_TOKEN must be set for the broadcaster")
             bot = Bot(token=token)
             broadcaster = Broadcaster(
                 bot, sessionmaker, redis, settings, marker=settings.travelpayouts_marker
@@ -83,15 +83,15 @@ async def amain(roles: set[str]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="FlightBot worker-ləri")
+    parser = argparse.ArgumentParser(description="FlightBot workers")
     parser.add_argument(
-        "--roles", default=",".join(ALL_ROLES), help="vergüllə ayrılmış: " + ",".join(ALL_ROLES)
+        "--roles", default=",".join(ALL_ROLES), help="comma-separated: " + ",".join(ALL_ROLES)
     )
     args = parser.parse_args()
     roles = {r.strip() for r in args.roles.split(",") if r.strip()}
     unknown = roles - set(ALL_ROLES)
     if unknown:
-        raise SystemExit(f"naməlum rol(lar): {sorted(unknown)}")
+        raise SystemExit(f"unknown role(s): {sorted(unknown)}")
     asyncio.run(amain(roles))
 
 

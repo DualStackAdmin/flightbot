@@ -1,5 +1,5 @@
-"""Provayder abstraksiyası. Tək provayderə birbaşa bağlılıq biznes riskidir: bütün sistem
-yalnız bu interfeysi bilir."""
+"""Provider abstraction. Depending directly on a single provider is a business risk: the whole system
+only knows this interface."""
 
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -10,7 +10,7 @@ from flightbot.core.watch_key import WatchKey
 
 
 class ProviderError(Exception):
-    """Provayderdən gələn və ya provayderə çatmaqla bağlı xəta."""
+    """An error coming from the provider or related to reaching it."""
 
 
 class ProviderRateLimited(ProviderError):
@@ -30,14 +30,14 @@ class PriceQuote:
     found_at: datetime | None
     link: str | None
     provider: str
-    destination: str | None = None  # yalnız explore() nəticələrində dolur
+    destination: str | None = None  # only filled in explore() results
 
 
 class PriceProvider(Protocol):
     name: str
 
     async def offers(self, key: WatchKey, *, limit: int = 30, fresh: bool = False) -> list[PriceQuote]:
-        """Qiymətə görə artan sıralanmış təkliflər. Heç nə tapılmasa boş siyahı."""
+        """Offers sorted by price ascending. An empty list if nothing is found."""
         ...
 
     async def explore(
@@ -50,8 +50,8 @@ class PriceProvider(Protocol):
         limit: int = 20,
         fresh: bool = False,
     ) -> list[PriceQuote]:
-        """ "Hər yerə": origin-dən verilmiş ayda dünyada ən ucuz istiqamətlər (hər istiqamətdən 1 təklif),
-        qiymətə görə artan. `PriceQuote.destination` dolu olur."""
+        """ "Anywhere": the cheapest destinations in the world from `origin` in a given month (one offer per destination),
+        sorted by price ascending. `PriceQuote.destination` is set."""
         ...
 
 

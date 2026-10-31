@@ -8,7 +8,7 @@ from tests.helpers import ScriptedProvider
 
 
 def _fresh_routers() -> None:
-    """aiogram router-i yalnız bir Dispatcher-ə bağlana bilər; hər test üçün handler modullarını təzələyirik."""
+    """An aiogram router can be attached to only one Dispatcher; reload the handler modules for every test."""
     import importlib
 
     from flightbot.bot.handlers import chat_member, fallback, feedback, flow, settings, start, watches_list

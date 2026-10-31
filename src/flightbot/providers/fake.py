@@ -1,7 +1,7 @@
-"""Deterministik saxta provayder: Travelpayouts tokeni olmadan inkişaf və demo üçün.
+"""Deterministic fake provider: for development and demos without a Travelpayouts token.
 
-Qiymət (marşrut, vaxt) funksiyasıdır: eyni marşrut üçün 3 saatlıq pəncərələrdə dəyişir,
-beləliklə izləmə və bildiriş məntiqini real görmək olar.
+The price is a function of (route, time): for the same route it changes in 3-hour windows,
+so you can see the watch and notification logic working realistically.
 """
 
 import hashlib

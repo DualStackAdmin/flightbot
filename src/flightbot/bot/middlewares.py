@@ -20,7 +20,7 @@ Handler = Callable[[Any, dict[str, Any]], Awaitable[Any]]
 
 
 class ThrottlingMiddleware(BaseMiddleware):
-    """İstifadəçi başına: saniyədə ~2 əməliyyat, 6-lıq burst. Redis-də olduğu üçün bütün replikalarda eyni."""
+    """Per user: ~2 actions per second with a burst of 6. Stored in Redis, so identical across all replicas."""
 
     def __init__(self, redis: Redis, rate: float = 2.0, burst: int = 6) -> None:
         self._bucket = TokenBucket(redis)
@@ -55,7 +55,7 @@ class DbSessionMiddleware(BaseMiddleware):
 
 
 class UserMiddleware(BaseMiddleware):
-    """İstifadəçini tapır/yaradır, `user`, `is_new_user` və `tr` (dilə bağlı tərcümə) yeridir."""
+    """Finds/creates the user and injects `user`, `is_new_user` and `tr` (a translator bound to the user's language)."""
 
     def __init__(self, settings: Settings, clock: Callable[[], datetime] = utcnow) -> None:
         self._settings = settings
@@ -75,7 +75,7 @@ class UserMiddleware(BaseMiddleware):
             default_home_iata=self._settings.default_home_iata,
             now=self._clock(),
         )
-        # Commit: DB bağlantısı pula qayıdır. Provayder çağırışı kimi uzun handler-lər bağlantı tutmur.
+        # Commit: the DB connection goes back to the pool, so long handlers (e.g. a provider call) don't hold one.
         await session.commit()
         data["user"] = user
         data["is_new_user"] = created

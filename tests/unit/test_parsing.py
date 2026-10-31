@@ -25,9 +25,9 @@ TODAY = date(2026, 10, 31)
         ("15.07.27", date(2027, 7, 15)),
         ("2027-07-15", date(2027, 7, 15)),
         ("  15.07.2027  ", date(2027, 7, 15)),
-        ("15.12", date(2026, 12, 15)),  # bu il, hələ gəlməyib
-        ("15.03", date(2027, 3, 15)),  # keçib -> növbəti il
-        ("31.10", date(2026, 10, 31)),  # bu gün: keçmiş sayılmır
+        ("15.12", date(2026, 12, 15)),  # this year, not yet passed
+        ("15.03", date(2027, 3, 15)),  # passed -> next year
+        ("31.10", date(2026, 10, 31)),  # today: doesn't count as past
     ],
 )
 def test_parse_user_date_valid(text, expected):
@@ -38,7 +38,7 @@ def test_parse_user_date_valid(text, expected):
     "text", ["", "abc", "32.01.2027", "15.13.2027", "29.02.2027", "15.07", "1507", "15..07.2027"][:7]
 )
 def test_parse_user_date_invalid(text):
-    if text == "15.07":  # bu etibarlı formadır (növbəti baş verən tarix)
+    if text == "15.07":  # this is a valid form (the next occurring date)
         assert parse_user_date(text, TODAY) == date(2027, 7, 15)
     else:
         assert parse_user_date(text, TODAY) is None
@@ -77,5 +77,9 @@ def test_month_token_roundtrip():
 
 
 def test_quick_targets():
-    assert quick_targets(Decimal("200")) == [(15, 170), (10, 180), (25, 150)]  # birincisi tövsiyədir
-    assert quick_targets(Decimal("1")) == [(15, 1), (10, 1), (25, 1)]  # heç vaxt 0 olmur
+    assert quick_targets(Decimal("200")) == [
+        (15, 170),
+        (10, 180),
+        (25, 150),
+    ]  # the first is the recommendation
+    assert quick_targets(Decimal("1")) == [(15, 1), (10, 1), (25, 1)]  # never becomes 0

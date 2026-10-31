@@ -1,11 +1,11 @@
-"""Broadcaster: outbox-dan bildirişləri götürür (prioritet: Pro əvvəl) və Telegram limitlərinə
-hörmət edərək göndərir.
+"""Broadcaster: takes notifications from the outbox (priority: Pro first) and sends them while respecting
+Telegram limits.
 
-- Qlobal limit (25 msg/s) və istifadəçi başına 1 msg/s Redis token bucket-dadır, replikalar arası paylaşılır.
-- RetryAfter: bütün replikalar üçün qlobal pauza (Redis açarı) + mesaj növbəyə qaytarılır.
-- Forbidden / chat not found: istifadəçi bloklanmış sayılır, abunəliklər dondurulur.
-- Çatdırılma "at-least-once"-dur: worker mesaj göndərilib status yazılmazdan əvvəl çöksə,
-  lease bitəndə yenidən göndərilə bilər (nadir, pəncərə millisaniyələrlə ölçülür).
+- The global limit (25 msg/s) and 1 msg/s per user live in a Redis token bucket, shared across replicas.
+- RetryAfter: a global pause for all replicas (a Redis key) + the message is returned to the queue.
+- Forbidden / chat not found: the user counts as blocked and their watches are frozen.
+- Delivery is "at-least-once": if a worker crashes after sending but before writing the status,
+  the message may be re-sent once the lease expires (rare; the window is milliseconds).
 """
 
 import asyncio
@@ -94,7 +94,7 @@ class Broadcaster:
         self._clock = clock
         self._sem = asyncio.Semaphore(settings.broadcaster_concurrency)
 
-    # ------------------------------------------------------------------ döngü
+    # ------------------------------------------------------------------ loop
     async def run_once(self) -> int:
         outgoing = await self.claim()
         if outgoing:
@@ -124,8 +124,8 @@ class Broadcaster:
                 await self._fail_or_retry(n, "unexpected")
 
     # ------------------------------------------------------------------ claim
-    # Dəyişməz qayda: bütün çıxış keçidləri yalnız 'sending' vəziyyətindən icazəlidir (WHERE status='sending').
-    # Başqa worker/proses sətri artıq dəyişibsə (skipped/sent), gec gələn yazı onu pozmur.
+    # Invariant: all exit transitions are allowed only from the 'sending' state (WHERE status='sending').
+    # If another worker/process has already changed the row (skipped/sent), a late write does not corrupt it.
     async def claim(self) -> list[Outgoing]:
         async with self._sm.begin() as s:
             rows = (
@@ -158,7 +158,7 @@ class Broadcaster:
             out.append(Outgoing(r.id, r.user_id, u.telegram_id, u.language, r.payload, r.attempts))
         return out
 
-    # ---------------------------------------------------------------- çatdırma
+    # ---------------------------------------------------------------- delivery
     async def deliver(self, n: Outgoing) -> str:
         if n.attempts > self._settings.broadcaster_max_attempts:
             await self._finish(n.id, "failed", error="max_attempts_exceeded")
@@ -166,8 +166,8 @@ class Broadcaster:
         try:
             return await self._deliver(n)
         except RedisError as exc:
-            # Redis düşüb: bu bildirişin günahı deyil. Cəhd yandırmadan gözləməyə qaytar,
-            # uzun Redis outage-ı bildirişləri 'failed' etməsin.
+            # Redis is down: this is not the notification's fault. Put it back to waiting without burning an attempt,
+            # so a long Redis outage doesn't turn notifications into 'failed'.
             metrics.TELEGRAM_ERRORS.labels("redis_down").inc()
             log.error("broadcaster_redis_error", notification_id=n.id, error=repr(exc))
             await self._reschedule(n.id, delay=10.0, undo_attempt=True)
@@ -220,18 +220,18 @@ class Broadcaster:
             if any(h in str(exc).lower() for h in _BLOCKED_HINTS):
                 await self._block_user(n)
                 return "blocked"
-            # Bizim tərəfin xətasıdır (məs. yanlış HTML): təkrar cəhd mənasızdır
+            # Our side's mistake (e.g. invalid HTML): retrying is pointless
             log.error("telegram_bad_request", notification_id=n.id, error=str(exc))
             await self._finish(n.id, "failed", error=f"bad_request: {exc}"[:500])
             return "failed"
-        except TelegramAPIError as exc:  # şəbəkə / 5xx və s.
+        except TelegramAPIError as exc:  # network / 5xx etc.
             metrics.TELEGRAM_ERRORS.labels("api_error").inc()
             return await self._fail_or_retry(n, repr(exc)[:500])
 
         await self._finish(n.id, "sent", message_id=msg.message_id)
         return "sent"
 
-    # -------------------------------------------------------- vəziyyət keçidləri
+    # -------------------------------------------------------- state transitions
     async def _finish(
         self,
         notification_id: int,
@@ -250,7 +250,8 @@ class Broadcaster:
                 ),
                 {
                     "st": status,
-                    "is_sent": status == "sent",  # ayrıca parametr: asyncpg eyni $n üçün 2 tip çıxara bilmir
+                    "is_sent": status
+                    == "sent",  # separate parameter: asyncpg cannot infer 2 types for the same $n
                     "err": error,
                     "mid": message_id,
                     "now": self._clock(),
@@ -289,7 +290,7 @@ class Broadcaster:
         log.info("user_blocked_bot", user_id=n.user_id)
         async with self._sm.begin() as s:
             await mark_blocked(s, n.user_id)
-        # mark_blocked gözləyən bildirişləri 'skipped' edir; cari olan da daxildir
+        # mark_blocked sets pending notifications to 'skipped'; the current one is included
         metrics.NOTIFICATIONS.labels("skipped").inc()
 
     # ------------------------------------------------------------------ metrika

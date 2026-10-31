@@ -1,5 +1,5 @@
-"""Sadə, asılılıqsız i18n: az (default), ru, en. Testlər bütün dillərin açar və placeholder
-uyğunluğunu yoxlayır, beləliklə tərcümə çatışmazlığı CI-da tutulur."""
+"""Simple, dependency-free i18n: az (default), ru, en. Tests verify that every language has the same keys and
+placeholders, so a missing translation is caught in CI."""
 
 import html
 from datetime import date

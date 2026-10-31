@@ -11,7 +11,7 @@ async def test_expires_watches_whose_window_has_passed_and_keeps_future(sm):
     u = await make_user(sm, 1)
     await make_watch(sm, u, key(days=10), 100)
     await make_watch(sm, u, key(dest="DXB", days=20), 100)
-    async with sm.begin() as s:  # IST açarının tarixi keçib
+    async with sm.begin() as s:  # the IST key's date has passed
         await s.execute(text("UPDATE watch_keys SET expires_on = current_date - 1 WHERE destination='IST'"))
     result = await run_janitor_once(sm, today())
     assert result["expired"] == 1
@@ -24,7 +24,7 @@ async def test_month_watch_expires_only_after_month_end(sm):
     u = await make_user(sm, 1)
     k = key(mode=DateMode.MONTH, days=5)
     await make_watch(sm, u, k, 100)
-    await run_janitor_once(sm, k.window_end)  # ayın son günü: hələ keçməyib
+    await run_janitor_once(sm, k.window_end)  # last day of the month: not yet passed
     assert await scalar(sm, "select status from watches") == "active"
     await run_janitor_once(sm, k.window_end + timedelta(days=1))
     assert await scalar(sm, "select status from watches") == "expired"
@@ -62,7 +62,7 @@ async def test_purges_old_notifications_and_history_but_keeps_recent(sm):
     r = await run_janitor_once(sm, today())
     assert r["notifications"] == 1 and r["price_points"] == 1
     keys = {x for x in (await _dedups(sm))}
-    assert keys == {"old-pending", "new"}  # gözləyən bildiriş heç vaxt silinmir
+    assert keys == {"old-pending", "new"}  # a pending notification is never deleted
 
 
 async def _dedups(sm):
@@ -76,7 +76,7 @@ async def test_orphaned_expired_keys_are_deleted_only_when_unreferenced(sm):
     async with sm.begin() as s:
         await s.execute(text("UPDATE watch_keys SET expires_on = current_date - 5"))
     await run_janitor_once(sm, today())
-    assert await scalar(sm, "select count(*) from watch_keys") == 1  # expired watch hələ istinad edir
+    assert await scalar(sm, "select count(*) from watch_keys") == 1  # the expired watch still references it
     async with sm.begin() as s:
         await s.execute(text("DELETE FROM watches"))
     await run_janitor_once(sm, today())

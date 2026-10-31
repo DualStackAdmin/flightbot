@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flightbot"
-version = "0.2.0"
-description = "Telegram uçuş qiyməti izləmə platforması (watch-key dedup, outbox, rate-limited broadcaster)"
+version = "0.2.1"
+description = "Telegram flight price tracking platform (watch-key dedup, transactional outbox, rate-limited broadcaster)"
 requires-python = ">=3.12"
 dependencies = [
     "aiogram>=3.13,<4",
@@ -50,7 +50,7 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "S101"]
-# E501: uzun şərh/docstring-ləri formatter idarə etmir; kod `ruff format` ilə formatlanır
+# E501: the formatter doesn't wrap long comments/docstrings; code is formatted by `ruff format`
 ignore = ["S101", "B008", "E501"]
 
 [tool.ruff.lint.per-file-ignores]

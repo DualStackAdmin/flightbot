@@ -45,7 +45,7 @@ async def test_expired_pro_falls_back_to_free_limits(sm):
 
 
 async def test_free_plan_has_no_separate_flexible_limit(sm):
-    """Default rejim "ay üzrə"dir: 3 ay-izləməsi Free üçün normaldır."""
+    """The default mode is "by month": 3 month watches are normal for Free."""
     u = await make_user(sm, 1)
     for dest in ("IST", "DXB", "TBS"):
         await create(sm, u, key(dest=dest, mode=DateMode.MONTH, days=40))
@@ -62,11 +62,11 @@ async def test_flexible_limit_mechanism_still_enforced_when_a_plan_defines_it(sm
     with pytest.raises(QuotaExceeded) as exc:
         await create(sm, u, key(dest="DXB", mode=DateMode.MONTH, days=40))
     assert exc.value.code == "max_flexible"
-    await create(sm, u, key(dest="DXB"))  # dəqiq tarix hələ olar
+    await create(sm, u, key(dest="DXB"))  # an exact date is still allowed
 
 
 async def test_quota_cannot_be_bypassed_by_parallel_requests(sm):
-    """10 paralel sorğu: kvota istifadəçi sətri üzərində FOR UPDATE ilə atomikdir."""
+    """10 parallel requests: the quota is atomic via FOR UPDATE on the user row."""
     u = await make_user(sm, 1)
     dests = ["IST", "DXB", "TBS", "LON", "PAR", "BER", "ROM", "AMS", "MAD", "PRG"]
     results = await asyncio.gather(*(create(sm, u, key(dest=d)) for d in dests), return_exceptions=True)
@@ -120,7 +120,7 @@ async def test_new_watch_on_already_cheap_key_schedules_immediate_check(sm):
         await s.execute(
             text("UPDATE watch_keys SET last_price = 80, next_check_at = now() + interval '5 hours'")
         )
-    await make_watch(sm, u2, k, 90)  # 80 <= 90 -> dərhal yoxlanmalıdır
+    await make_watch(sm, u2, k, 90)  # 80 <= 90 -> must be checked immediately
     assert await scalar(sm, "select next_check_at <= now() from watch_keys") is True
 
 

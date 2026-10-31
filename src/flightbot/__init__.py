@@ -1,3 +1,3 @@
-"""FlightBot: Telegram uçuş qiyməti izləmə platforması."""
+"""FlightBot: a Telegram flight price tracking platform."""
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

@@ -37,11 +37,11 @@ async def test_webhook_rejects_missing_or_wrong_secret_and_accepts_correct(
         no_header = await client.post("/tg", json=update())
         wrong = await client.post("/tg", json=update(), headers={"X-Telegram-Bot-Api-Secret-Token": "nope"})
         assert no_header.status == 401 and wrong.status == 401
-        assert await scalar(sm, "select count(*) from users") == 0  # saxta update emal olunmadı
+        assert await scalar(sm, "select count(*) from users") == 0  # the fake update was not processed
 
         ok = await client.post("/tg", json=update(), headers={"X-Telegram-Bot-Api-Secret-Token": SECRET})
         assert ok.status == 200
-        # SimpleRequestHandler cavabı fon task-ında emal edir; qısa gözləmə
+        # SimpleRequestHandler processes the update in a background task; short wait
         import asyncio
 
         for _ in range(50):

@@ -1,4 +1,4 @@
-"""Bot testləri üçün infrastruktur: Telegram şəbəkəsini mock edən sessiya və istifadəçi simulyatoru."""
+"""Test infrastructure for the bot: a session that mocks the Telegram network, and a user simulator."""
 
 import time
 from collections.abc import AsyncIterator
@@ -43,7 +43,7 @@ class MockSession(BaseSession):
 
 
 class Chat:
-    """Bir Telegram istifadəçisinin simulyasiyası."""
+    """Simulates a single Telegram user."""
 
     def __init__(self, dp, bot: Bot, session: MockSession, tg_id: int, lang: str = "az") -> None:
         self.dp, self.bot, self.session, self.tg_id, self.lang = dp, bot, session, tg_id, lang
@@ -74,7 +74,7 @@ class Chat:
         )
 
     async def say_non_text(self) -> None:
-        """Mətn olmayan mesaj (məs. lokasiya)."""
+        """A non-text message (e.g. a location)."""
         self._cursor = len(self.session.log)
         await self.dp.feed_raw_update(
             self.bot,
@@ -95,7 +95,7 @@ class Chat:
             for b in self._buttons_of(m):
                 if label_part in b.text and b.url:
                     return b.url
-        raise AssertionError(f"url düyməsi tapılmadı: {label_part!r}")
+        raise AssertionError(f"url button not found: {label_part!r}")
 
     async def click(self, data: str, *, message_id: int = 1, reply_markup: dict | None = None) -> None:
         self._cursor = len(self.session.log)
@@ -150,10 +150,10 @@ class Chat:
         return []
 
     async def press(self, label_part: str) -> None:
-        """Ən son mesajlarda düyməni mətninə görə tapıb basır."""
+        """Finds a button by its text in the most recent messages and presses it."""
         for m, mid in reversed(self.outgoing()):
             for b in self._buttons_of(m):
                 if label_part in b.text and b.callback_data:
                     await self.click(b.callback_data, message_id=mid)
                     return
-        raise AssertionError(f"düymə tapılmadı: {label_part!r}; mövcud: {self.button_labels()}")
+        raise AssertionError(f"button not found: {label_part!r}; available: {self.button_labels()}")

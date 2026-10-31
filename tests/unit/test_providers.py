@@ -114,7 +114,7 @@ async def test_auth_failure_is_not_retried():
 
 
 async def test_5xx_is_retried_then_fails(monkeypatch):
-    async def no_sleep(_):  # testi sürətləndir
+    async def no_sleep(_):  # speed the test up
         pass
 
     monkeypatch.setattr("flightbot.providers.travelpayouts.asyncio.sleep", no_sleep)

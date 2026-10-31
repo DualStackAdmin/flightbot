@@ -42,7 +42,7 @@ async def test_wait_raises_when_wait_exceeds_max(redis):
 
 
 async def test_bucket_is_shared_across_instances(redis):
-    """Fərqli proses/replikalar eyni bucket-ı paylaşır (əvvəlki in-process limiter problemi)."""
+    """Different processes/replicas share the same bucket (the old in-process limiter problem)."""
     b1, b2 = TokenBucket(redis), TokenBucket(redis)
     assert await b1.acquire("shared", rate=1, capacity=1) == 0
     assert await b2.acquire("shared", rate=1, capacity=1) > 0
@@ -58,8 +58,8 @@ async def test_bucket_total_throughput_across_concurrent_workers(redis):
             if await b.acquire("burst", rate=5, capacity=5) == 0:
                 granted += 1
 
-    await asyncio.gather(*(worker() for _ in range(5)))  # 100 cəhd
-    assert granted == 5  # yalnız capacity qədər keçir
+    await asyncio.gather(*(worker() for _ in range(5)))  # 100 attempts
+    assert granted == 5  # only `capacity` get through
 
 
 class SlowCountingProvider(ScriptedProvider):
@@ -83,11 +83,11 @@ async def test_fresh_bypasses_cache_and_updates_it(redis):
     await cp.offers(k)
     fresh = await cp.offers(k, fresh=True)
     assert inner.calls == 2 and fresh[0].price == Decimal("80")
-    assert (await cp.offers(k))[0].price == Decimal("80")  # keş yeniləndi
+    assert (await cp.offers(k))[0].price == Decimal("80")  # the cache was updated
 
 
 async def test_concurrent_requests_are_coalesced_into_one_call(redis):
-    """Singleflight: 10 paralel sorğu = 1 provayder sorğusu (keş stampede mühafizəsi)."""
+    """Singleflight: 10 parallel requests = 1 provider request (cache stampede protection)."""
     inner = SlowCountingProvider(100)
     cp = CachedProvider(inner, redis, today_fn=today)
     k = key()
@@ -97,14 +97,14 @@ async def test_concurrent_requests_are_coalesced_into_one_call(redis):
 
 
 async def test_lock_timeout_never_raises_and_falls_back_to_own_fetch(redis):
-    """Əvvəlki dizayndakı LockError problemi: kilid tutulubsa və keş dolmursa, xəta yox, fallback."""
+    """The old LockError problem: if the lock is held and the cache never fills, no error, just a fallback."""
     inner = ScriptedProvider(100)
     cp = CachedProvider(inner, redis, today_fn=today, wait_for_peer_s=0.4)
     k = key()
-    await redis.set(f"lock:quote:{k.cache_id()}", "someone-else", px=5000)  # ölü kilid
+    await redis.set(f"lock:quote:{k.cache_id()}", "someone-else", px=5000)  # a dead lock
     out = await cp.offers(k)
     assert out[0].price == Decimal("100") and inner.calls == 1
-    # başqasının kilidi silinməməlidir (token yoxlaması)
+    # someone else's lock must not be deleted (token check)
     assert await redis.get(f"lock:quote:{k.cache_id()}") == b"someone-else"
 
 
@@ -133,6 +133,6 @@ async def test_rate_limited_provider_waits_for_shared_bucket(redis):
     rl = RateLimitedProvider(inner, TokenBucket(redis), rps=20)
     k = key()
     t0 = time.monotonic()
-    await asyncio.gather(*(rl.offers(k) for _ in range(6)))  # capacity 20 -> hamısı dərhal
+    await asyncio.gather(*(rl.offers(k) for _ in range(6)))  # capacity 20 -> all go through immediately
     assert time.monotonic() - t0 < 0.5 and inner.calls == 6
     assert isinstance(PriceQuote, type)

@@ -1,11 +1,11 @@
-"""Sxem v2.
+"""Schema v2.
 
-Əsas dizayn qərarları:
-- `watch_keys`  = API sorğusunun unikal vahidi (dedup). `watches` = istifadəçinin abunəliyi.
-- `watch_keys.active_watch_count` DB trigger-i ilə saxlanılır (əl ilə yenilənmir -> sürüşmə olmur).
-- `notifications` = transactional outbox. Bildiriş poller-in transaksiyasında yazılır, ayrıca
-  broadcaster göndərir. Redis itsə belə bildiriş itmir.
-- `tenant_id` ilk gündən var (gələcək B2B / white-label üçün ucuz sığorta).
+Key design decisions:
+- `watch_keys` = the unique unit of an API request (dedup). `watches` = a user's subscription.
+- `watch_keys.active_watch_count` is maintained by a DB trigger (never updated by hand -> no drift).
+- `notifications` = transactional outbox. A notification is written in the poller's transaction and
+  sent separately by the broadcaster. It survives a Redis loss.
+- `tenant_id` exists from day one (cheap insurance for future B2B / white-label).
 """
 
 from datetime import date, datetime
@@ -69,7 +69,7 @@ class User(Base):
 
 
 class WatchKey(Base):
-    """Provayderə gedən sorğunun unikal imzası. Eyni imza = 1 sorğu, nə qədər abunə olursa olsun."""
+    """The unique signature of a provider request. Same signature = 1 request, however many users subscribe."""
 
     __tablename__ = "watch_keys"
     __table_args__ = (
@@ -87,7 +87,7 @@ class WatchKey(Base):
         CheckConstraint("date_mode IN ('exact','month')", name="date_mode"),
         CheckConstraint("char_length(origin) = 3 AND char_length(destination) = 3", name="iata"),
         CheckConstraint("active_watch_count >= 0", name="count_nonneg"),
-        # Scheduler yalnız vaxtı çatmış və aktiv abunəçisi olan açarlara baxır.
+        # The scheduler only looks at keys that are due and have an active subscriber.
         Index(
             "ix_watch_keys_due",
             "next_check_at",
@@ -115,7 +115,7 @@ class WatchKey(Base):
 
 
 class Watch(Base):
-    """İstifadəçinin abunəliyi."""
+    """A user's subscription."""
 
     __tablename__ = "watches"
     __table_args__ = (
@@ -137,7 +137,7 @@ class Watch(Base):
     target_price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     status: Mapped[str] = mapped_column(String(8), server_default="active")
     pause_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 'user' | 'blocked'
-    # armed=False: bildiriş göndərilib, qiymət hədəfdən yuxarı qalxana qədər yenidən silahlanmır
+    # armed=False: a notification was sent; not re-armed until the price rises above the target
     armed: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     last_notified_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     last_notified_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
@@ -146,7 +146,7 @@ class Watch(Base):
 
 
 class PricePoint(Base):
-    """Qiymət tarixçəsi. Gələcək 'yaxşı qiymət' nişanı və qrafik üçün ilk gündən yazılır."""
+    """Price history. Written from day one for the future 'good price' badge and charts."""
 
     __tablename__ = "price_points"
     __table_args__ = (Index("ix_price_points_key_time", "watch_key_id", text("observed_at DESC")),)

@@ -4,7 +4,7 @@ from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from flightbot.config import get_settings
-from flightbot.db import models  # noqa: F401  (metadata üçün)
+from flightbot.db import models  # noqa: F401  (for the metadata)
 from flightbot.db.base import Base
 
 config = context.config
@@ -12,7 +12,7 @@ target_metadata = Base.metadata
 
 
 def _url() -> str:
-    # Testlər sqlalchemy.url-i proqramatik təyin edir; əks halda DATABASE_URL.
+    # Tests set sqlalchemy.url programmatically; otherwise DATABASE_URL.
     return config.get_main_option("sqlalchemy.url") or get_settings().database_url
 
 

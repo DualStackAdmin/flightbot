@@ -1,7 +1,7 @@
 """Admin CLI: `python -m flightbot.cli stats | grant-pro | revoke-pro`.
 
-Ödəniş (Telegram Stars) əlavə olunana qədər Pro planı əl ilə verməyin yoludur.
-`stats` spesifikasiyadakı uğur metriklərini verir: aktiv istifadəçilər, bildiriş keyfiyyəti (👍/👎), bloklama faizi.
+The way to grant the Pro plan manually until payments (Telegram Stars) are added.
+`stats` reports the success metrics from the spec: active users, notification quality (👍/👎), block rate.
 """
 
 import argparse
@@ -65,11 +65,11 @@ async def _run(args: argparse.Namespace) -> int:
                 print(f"{k:26} {v}")
         elif args.cmd == "grant-pro":
             ok = await set_plan(sm, telegram_id=args.telegram_id, plan="pro", days=args.days)
-            print("OK" if ok else "istifadəçi tapılmadı")
+            print("OK" if ok else "user not found")
             return 0 if ok else 1
         elif args.cmd == "revoke-pro":
             ok = await set_plan(sm, telegram_id=args.telegram_id, plan="free", days=None)
-            print("OK" if ok else "istifadəçi tapılmadı")
+            print("OK" if ok else "user not found")
             return 0 if ok else 1
     finally:
         await engine.dispose()
@@ -79,11 +79,11 @@ async def _run(args: argparse.Namespace) -> int:
 def main() -> None:
     ap = argparse.ArgumentParser(prog="flightbot.cli")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("stats", help="əsas göstəricilər")
-    g = sub.add_parser("grant-pro", help="Pro plan ver")
+    sub.add_parser("stats", help="key metrics")
+    g = sub.add_parser("grant-pro", help="grant the Pro plan")
     g.add_argument("telegram_id", type=int)
-    g.add_argument("--days", type=int, default=30, help="müddət (0 = müddətsiz)")
-    r = sub.add_parser("revoke-pro", help="Pro planı geri al")
+    g.add_argument("--days", type=int, default=30, help="duration (0 = unlimited)")
+    r = sub.add_parser("revoke-pro", help="revoke the Pro plan")
     r.add_argument("telegram_id", type=int)
     args = ap.parse_args()
     if args.cmd == "grant-pro" and args.days == 0:

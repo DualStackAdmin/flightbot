@@ -114,15 +114,15 @@ async def test_retry_after_pauses_everyone_and_requeues_without_burning_attempts
     s2 = settings.model_copy(update={"broadcaster_batch": 1})
     b = bc(sm, redis, s2, bot)
 
-    await b.run_once()  # 1-ci mesaj 429 alır
+    await b.run_once()  # the 1st message gets a 429
     st = await status_of(sm, n1)
-    assert st.status == "pending" and st.attempts == 0  # cəhd yandırılmadı
+    assert st.status == "pending" and st.attempts == 0  # the attempt was not burned
     assert float(await redis.get(PAUSE_KEY)) > time.time() + 20  # qlobal pauza
     assert await scalar(
         sm, "select available_at > now() + interval '20 seconds' from notifications where id=:i", i=n1
     )
 
-    await b.run_once()  # pauza aktivdir: 2-ci mesaj da göndərilməməlidir
+    await b.run_once()  # the pause is active: the 2nd message must not be sent either
     assert bot.sent == []
     st2 = await status_of(sm, n2)
     assert st2.status == "pending" and st2.attempts == 0
@@ -174,7 +174,7 @@ async def test_network_error_retries_with_backoff_then_fails_at_max(sm, redis, s
         st = await status_of(sm, nid)
         assert st.status == "pending" and st.attempts == attempt
         assert await scalar(sm, "select available_at > now() + interval '10 seconds' from notifications")
-        async with sm.begin() as s:  # backoff-u gözləmə
+        async with sm.begin() as s:  # wait out the backoff
             await s.execute(text("UPDATE notifications SET available_at = now() - interval '1 second'"))
         await redis.delete("rl:tg:user:1")
     await b.run_once()
@@ -238,7 +238,7 @@ async def test_two_broadcasters_never_double_send(sm, redis, settings):
 
 
 async def test_global_rate_limit_spreads_sends_across_replicas(sm, redis, settings):
-    """Paylanmış limit: iki broadcaster birlikdə qlobal limitdən çox göndərə bilməz."""
+    """Distributed limit: two broadcasters together cannot send more than the global limit."""
     import asyncio
 
     low = settings.model_copy(update={"telegram_global_rps": 5.0})
@@ -250,7 +250,7 @@ async def test_global_rate_limit_spreads_sends_across_replicas(sm, redis, settin
     await asyncio.gather(*(bc(sm, redis, low, b).run_once() for b in bots))
     elapsed = time.monotonic() - t0
     assert len(bots[0].sent) + len(bots[1].sent) == 12
-    # capacity 5 + 5/s: 12 mesaj >= ~1.2 san (tək replika limiti ikiqat aşa bilməz)
+    # capacity 5 + 5/s: 12 messages >= ~1.2 s (a single replica can't exceed the limit twofold)
     assert elapsed >= 1.0
 
 
@@ -282,7 +282,7 @@ def test_retry_backoff_schedule():
 
 
 class DeadRedis:
-    """Redis-in düşməsini simulyasiya edir."""
+    """Simulates Redis going down."""
 
     def register_script(self, _src):
         async def boom(*a, **kw):
@@ -302,7 +302,7 @@ async def test_redis_outage_never_burns_attempts_or_fails_notifications(sm, sett
     nid = await add(sm, u)
     bot = FakeBot()
     b = Broadcaster(bot, sm, DeadRedis(), settings, marker="")
-    for _ in range(6):  # max_attempts=3-dən çox dəfə; Redis hələ də düşüb
+    for _ in range(6):  # more times than max_attempts=3; Redis is still down
         await b.run_once()
         async with sm.begin() as s:
             await s.execute(text("UPDATE notifications SET available_at = now() - interval '1 second'"))
@@ -317,5 +317,5 @@ async def test_notification_delivered_after_redis_recovers(sm, redis, settings):
     async with sm.begin() as s:
         await s.execute(text("UPDATE notifications SET available_at = now() - interval '1 second'"))
     bot = FakeBot()
-    await bc(sm, redis, settings, bot).run_once()  # Redis qayıtdı
+    await bc(sm, redis, settings, bot).run_once()  # Redis is back
     assert (await status_of(sm, nid)).status == "sent" and len(bot.sent) == 1

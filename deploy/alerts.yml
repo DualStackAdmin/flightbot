@@ -1,4 +1,4 @@
-# Alertmanager qoşulmayıb: qaydalar Prometheus UI-da görünür. İstehsalda Alertmanager/Grafana Cloud əlavə edin.
+# Alertmanager is not wired up: the rules are only visible in the Prometheus UI. In production add Alertmanager / Grafana Cloud.
 groups:
   - name: flightbot
     rules:
@@ -6,14 +6,14 @@ groups:
         expr: notification_queue_lag_seconds > 300
         for: 5m
         annotations:
-          summary: "Bildiriş növbəsi 5+ dəqiqə gecikir"
-          description: "Broadcaster ayaq tutmur, Telegram limiti və ya replika sayını yoxlayın (docs/OPERATIONS.md)."
+          summary: "Notification queue is lagging by more than 5 minutes"
+          description: "The broadcaster can't keep up. Check the Telegram limit and the replica count (docs/OPERATIONS.md)."
 
       - alert: TelegramRateLimited
         expr: increase(telegram_errors_total{type="retry_after"}[10m]) > 0
         annotations:
-          summary: "Telegram 429 (RetryAfter) alınıb"
-          description: "Hədəf = 0. TELEGRAM_GLOBAL_RPS dəyərini və broadcaster replika sayını yoxlayın."
+          summary: "Telegram 429 (RetryAfter) received"
+          description: "Target = 0. Check TELEGRAM_GLOBAL_RPS and the number of broadcaster replicas."
 
       - alert: ProviderErrorRateHigh
         expr: >
@@ -21,23 +21,23 @@ groups:
           / clamp_min(sum(rate(provider_requests_total[10m])), 0.001) > 0.2
         for: 10m
         annotations:
-          summary: "Qiymət provayderi xətaları > 20%"
+          summary: "Price provider error rate > 20%"
 
       - alert: DueKeysBacklog
         expr: due_watch_keys > 500
         for: 15m
         annotations:
-          summary: "Poller geridə qalır (>500 vaxtı çatmış açar)"
-          description: "Provayder RPS limiti və ya poller replika sayı çatmır."
+          summary: "Poller is falling behind (>500 due keys)"
+          description: "The provider RPS limit or the number of poller replicas is not enough."
 
       - alert: WatchCountDrift
         expr: increase(active_watch_count_drift_total[1h]) > 0
         annotations:
-          summary: "active_watch_count trigger-i ilə real say uyğun gəlmir (janitor düzəltdi)"
-          description: "Bu baş verməməlidir. Trigger-lərin mövcudluğunu yoxlayın."
+          summary: "active_watch_count does not match the real count (the janitor fixed it)"
+          description: "This should never happen. Check that the triggers exist."
 
       - alert: WorkerDown
         expr: up{job="flightbot-worker"} == 0
         for: 2m
         annotations:
-          summary: "Worker əlçatmazdır"
+          summary: "Worker is unreachable"

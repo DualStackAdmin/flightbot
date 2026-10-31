@@ -1,7 +1,7 @@
-"""Yoxlama tezliyi və keş TTL. Bütün dəyərlər tənzimlənə bilən cədvəllərdir.
+"""Check frequency and cache TTL. All values are tunable tables.
 
-Free: ~3-24 saat (qalxışa qalan vaxta görə), Pro: ~1-6 saat.
-Qeyd: Travelpayouts Data API keşlənmiş data verir, ona görə 1 saatdan tez yoxlamaq mənasızdır.
+Free: ~3-24 hours (depending on time to departure), Pro: ~1-6 hours.
+Note: the Travelpayouts Data API serves cached data, so checking more often than hourly is pointless.
 """
 
 import random
@@ -9,11 +9,11 @@ from datetime import timedelta
 
 H = 3600
 
-# (qalxışa qədər maksimum gün, interval saniyə)
+# (max days to departure, interval in seconds)
 FREE_TIERS: tuple[tuple[int, int], ...] = ((7, 3 * H), (30, 6 * H), (90, 12 * H), (10_000, 24 * H))
 PRO_TIERS: tuple[tuple[int, int], ...] = ((30, 1 * H), (90, 3 * H), (10_000, 6 * H))
 
-# Provayder keşi (user-initiated /search və təkrarlanan sorğular üçün)
+# Provider cache (for user-initiated /search and repeated requests)
 CACHE_TIERS: tuple[tuple[int, int], ...] = ((3, 300), (14, 1200), (60, 3600), (10_000, 14_400))
 
 JITTER = 0.10
@@ -39,7 +39,7 @@ def check_interval(horizon_days: int, has_pro_watcher: bool) -> timedelta:
 
 
 def next_check_delay(horizon_days: int, has_pro_watcher: bool, rng: random.Random | None = None) -> timedelta:
-    """±10% jitter: eyni anda yaradılmış açarlar eyni saniyədə yoxlanmasın (thundering herd)."""
+    """±10% jitter: keys created at the same moment must not be checked in the same second (thundering herd)."""
     base = check_interval(horizon_days, has_pro_watcher).total_seconds()
     return timedelta(seconds=_jitter(base, rng))
 

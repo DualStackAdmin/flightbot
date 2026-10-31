@@ -15,7 +15,7 @@ async def test_grant_and_revoke_pro(sm):
     assert await set_plan(sm, telegram_id=55, plan="free", days=None)
     row = (await _user(sm)).one()
     assert effective_plan(row.plan, row.plan_expires_at, datetime.now(UTC)) == "free"
-    assert not await set_plan(sm, telegram_id=999, plan="pro", days=1)  # yoxdur
+    assert not await set_plan(sm, telegram_id=999, plan="pro", days=1)  # does not exist
 
 
 async def _user(sm):

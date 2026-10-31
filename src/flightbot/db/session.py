@@ -11,7 +11,7 @@ from flightbot.config import Settings
 def create_engine(settings: Settings) -> AsyncEngine:
     connect_args: dict = {}
     if settings.db_statement_cache_size != 100:
-        # PgBouncer transaction mode üçün DB_STATEMENT_CACHE_SIZE=0
+        # DB_STATEMENT_CACHE_SIZE=0 for PgBouncer transaction mode
         connect_args["statement_cache_size"] = settings.db_statement_cache_size
     return create_async_engine(
         settings.database_url,

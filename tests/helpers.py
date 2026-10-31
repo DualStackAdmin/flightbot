@@ -82,7 +82,7 @@ async def rows(sm, sql: str, **params):
 
 
 class ScriptedProvider:
-    """Növbəti cavabları əvvəlcədən verilən provayder. Sonuncu element təkrarlanır."""
+    """A provider with pre-scripted responses. The last element repeats."""
 
     name = "scripted"
 
@@ -90,7 +90,7 @@ class ScriptedProvider:
         self.script = list(script)
         self.calls = 0
         self.fresh_calls = 0
-        self.explore_result: list | Exception | None = None  # explore() cavabı: siyahı və ya istisna
+        self.explore_result: list | Exception | None = None  # explore() response: a list or an exception
         self.explore_calls = 0
 
     def set(self, *script) -> None:
@@ -128,7 +128,7 @@ class ScriptedProvider:
 
 
 class FakeBot:
-    """aiogram Bot əvəzi. `errors` növbəsindəki istisnalar ardıcıl atılır (None = uğurlu)."""
+    """Stand-in for the aiogram Bot. Exceptions in the `errors` queue are raised in order (None = success)."""
 
     def __init__(self, *errors) -> None:
         self.errors = list(errors)

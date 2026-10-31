@@ -1,7 +1,7 @@
-"""Axın mühərriki: /new, /search, /explore üçün ortaq addım sistemi.
+"""Flow engine: the shared step system for /new, /search and /explore.
 
-Hədəf: standart izləmə 3 toxunuşdur (haraya -> ay -> hədəf). Haradan = ev şəhəri, tək istiqamət, birbaşa
-məcburi deyil. Hər addımda "Geri" və "Ləğv" var. Callback-dən gələn keçidlər mövcud mesajı redaktə edir.
+Goal: the default watch takes 3 touches (destination -> month -> target price). Origin = home city, one-way,
+"direct only" is off. Every step has "Back" and "Cancel". Transitions triggered by a callback edit the existing message.
 """
 
 import asyncio
@@ -80,7 +80,7 @@ class Ctx:
     session: AsyncSession
     tr: Callable[..., str]
     deps: Deps
-    edit_msg: Message | None = None  # "gözləyin" mesajı: növbəti göstəriş onu redaktə etsin
+    edit_msg: Message | None = None  # "please wait" message: the next output should edit it
 
     @property
     def lang(self) -> str:
@@ -124,7 +124,7 @@ def _date_error(d: date, today: date, not_before: date | None = None) -> str | N
     return None
 
 
-# ================================================================== addım mühərriki
+# ================================================================== step engine
 async def goto(c: Ctx, step: str, *, push: bool = True, text: str | None = None) -> None:
     d = await c.state.get_data()
     history = list(d.get("history", []))
@@ -207,7 +207,7 @@ async def render(c: Ctx, step: str, text: str | None = None) -> None:
         await render_search_result(c, d, origin)
 
 
-# ======================================================================== başlanğıc
+# ======================================================================== start
 async def begin(
     target: Message | CallbackQuery,
     state: FSMContext,
@@ -304,7 +304,7 @@ async def on_cancel(cb: CallbackQuery, state: FSMContext, user: User, tr) -> Non
     await show(cb, tr("cancelled"), kb.menu_kb(user.language))
 
 
-# ============================================================ yer seçimi (haraya / haradan)
+# ============================================================ place selection (destination / origin)
 async def _offer_places(message: Message, role: str, c: Ctx, *, back: bool) -> None:
     found = await c.deps.places.search((message.text or "").strip()[:64], c.lang)
     if not found:
@@ -361,7 +361,7 @@ async def pick_origin(
 ) -> None:
     await cb.answer()
     d = await state.get_data()
-    if d.get("purpose") == "sethome":  # /settings -> Ev şəhəri
+    if d.get("purpose") == "sethome":  # /settings -> Home city
         await set_home(session, user.id, callback_data.code)
         await state.clear()
         city = esc(place_name(callback_data.code, user.language))
@@ -369,7 +369,7 @@ async def pick_origin(
         return
     await state.update_data(origin=callback_data.code)
     c = _ctx(cb, state, user, session, tr, deps)
-    if not await go_back(c):  # tarixçə boşdursa (nadir): təyinat addımına
+    if not await go_back(c):  # empty history (rare): go to the destination step
         await goto(c, "dest", push=False)
 
 
@@ -400,9 +400,9 @@ async def go_explore(
     await goto(_ctx(cb, state, user, session, tr, deps), "x_when")
 
 
-# ================================================================ ay / tarix seçimi
+# ================================================================ month / date selection
 async def _after_when(c: Ctx) -> None:
-    """Tarix müəyyənləşdi: "ətraflı" açıqdırsa tip/birbaşa soruş, deyilsə dərhal hədəf qiymətə keç."""
+    """The date is settled: if "details" is on, ask trip type/direct; otherwise go straight to the target price."""
     d = await c.state.get_data()
     if d.get("advanced"):
         await goto(c, "trip")
@@ -544,11 +544,11 @@ async def pick_direct(
     await goto(_ctx(cb, state, user, session, tr, deps), "target")
 
 
-# ===================================================================== hədəf qiymət
+# ===================================================================== target price
 async def _current_price(provider, key: WatchKey) -> Decimal | None:
     try:
         quote = await asyncio.wait_for(cheapest(provider, key), PROVIDER_TIMEOUT_S)
-    except Exception as exc:  # noqa: BLE001  (provayder xətası axını dayandırmamalıdır)
+    except Exception as exc:  # noqa: BLE001  (a provider error must not break the flow)
         log.warning("current_price_failed", error=repr(exc))
         return None
     return quote.price if quote else None
@@ -564,7 +564,7 @@ async def render_target(c: Ctx) -> None:
         await c.state.clear()
         return
 
-    # Susqun gözləmə yoxdur: provayderə baxarkən dərhal "baxıram" göstərilir
+    # No silent waiting: show "checking prices" right away while the provider is queried
     hint = d.get("hint_price")
     waiting = await c.show(c.tr("target.looking")) if hint is None else None
     c.edit_msg = waiting
@@ -626,7 +626,7 @@ async def handle_target(c: Ctx, price: Decimal, *, force: bool) -> None:
     d = await c.state.get_data()
     current = Decimal(d["current_price"]) if d.get("current_price") else None
     if not force and current is not None and price >= current:
-        # Qiymət artıq hədəfdən aşağıdır: dərhal bildiriş gələcək. İstifadəçi bunu bilərək seçməlidir.
+        # The price is already below the target: a notification would fire immediately. The user must choose this knowingly.
         text = c.tr("target.already", current=fmt_price(current), currency=c.user.currency)
         await c.show(text, kb.target_warning_kb(int(price * 100), c.lang))
         return
@@ -768,7 +768,7 @@ async def pick_explore_month(
             ),
             EXPLORE_TIMEOUT_S,
         )
-    except Exception as exc:  # noqa: BLE001  (provayder/timeout: istifadəçiyə dost mesaj)
+    except Exception as exc:  # noqa: BLE001  (provider/timeout: a friendly message to the user)
         log.warning("explore_failed", error=repr(exc))
         await c.show(tr("explore.failed"), kb.nav_only_kb(user.language))
         return
@@ -868,12 +868,12 @@ async def go_watch(
     await goto(_ctx(cb, state, user, session, tr, deps), "target")
 
 
-# ============================================================== mətn: addımdan kənar
+# ============================================================== text outside the current step
 @router.message(StateFilter(*STEP_STATE.values()), F.text, ~F.text.startswith("/"))
 async def text_in_wrong_step(
     message: Message, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
 ) -> None:
-    """İstifadəçi düymə əvəzinə yazıb: cari addımı yenidən göstər (cavabsız qalmasın)."""
+    """The user typed instead of pressing a button: re-show the current step (never leave them without a reply)."""
     d = await state.get_data()
     step = d.get("step")
     if step in STEP_STATE:

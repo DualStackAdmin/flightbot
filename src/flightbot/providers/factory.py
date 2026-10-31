@@ -25,12 +25,12 @@ def build_http_client(settings: Settings) -> httpx.AsyncClient:
 
 
 def build_provider(settings: Settings, redis: Redis, http: httpx.AsyncClient) -> PriceProvider:
-    """Cached(RateLimited(Raw)): əvvəl keş, keş boşdursa paylaşılan RPS limiti, sonra real sorğu."""
+    """Cached(RateLimited(Raw)): cache first, then the shared RPS limit if the cache is empty, then the real request."""
     raw: PriceProvider
     if settings.provider == "travelpayouts":
         token = settings.travelpayouts_token.get_secret_value()
         if not token:
-            raise RuntimeError("PROVIDER=travelpayouts üçün TRAVELPAYOUTS_TOKEN təyin edilməlidir")
+            raise RuntimeError("TRAVELPAYOUTS_TOKEN must be set for PROVIDER=travelpayouts")
         raw = TravelpayoutsProvider(http, token)
     else:
         raw = FakeProvider()
@@ -45,5 +45,5 @@ def build_places(settings: Settings, http: httpx.AsyncClient) -> PlacesProvider:
 
 
 def build_names(settings: Settings, redis: Redis, http: httpx.AsyncClient) -> PlaceNames:
-    """Fake rejimdə yalnız statik adlar (şəbəkəyə çıxmır)."""
+    """In fake mode only static names are used (no network access)."""
     return PlaceNames(redis, http, remote=settings.provider == "travelpayouts")

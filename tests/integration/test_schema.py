@@ -1,4 +1,4 @@
-"""Sxem, trigger-lər və miqrasiya ilə modellərin uyğunluğu."""
+"""Schema, triggers and model/migration consistency."""
 
 import asyncio
 from datetime import UTC, datetime
@@ -21,7 +21,7 @@ async def count(sm, key_id=1):
 
 
 async def test_migration_matches_models(engine):
-    """Miqrasiya ilə modellər arasında drift olmamalıdır (yeni sütun miqrasiyasız unudulmasın)."""
+    """There must be no drift between the migration and the models (a new column must not be forgotten without a migration)."""
 
     def diff(sync_conn):
         ctx = MigrationContext.configure(sync_conn, opts={"compare_type": True})
@@ -41,7 +41,7 @@ async def test_trigger_tracks_active_count_through_lifecycle(sm):
     k = key()
     w1 = await make_watch(sm, u1, k, 100)
     assert await count(sm) == 1
-    await make_watch(sm, u2, k, 90)  # eyni açar, 2-ci istifadəçi
+    await make_watch(sm, u2, k, 90)  # same key, second user
     assert await count(sm) == 2
     assert await scalar(sm, "select count(*) from watch_keys") == 1  # dedup
 
@@ -110,7 +110,7 @@ async def test_unique_constraints(sm):
 
 
 async def test_nulls_not_distinct_makes_one_way_keys_unique(sm):
-    """return_date NULL olan eyni açar iki sətir olmamalıdır (PG15+ NULLS NOT DISTINCT)."""
+    """The same one-way key (return_date NULL) must not create two rows (PG15+ NULLS NOT DISTINCT)."""
     u1, u2 = await make_user(sm, 1), await make_user(sm, 2)
     k = key()
     await asyncio.gather(make_watch(sm, u1, k, 100), make_watch(sm, u2, k, 100))

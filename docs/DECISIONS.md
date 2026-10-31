@@ -1,48 +1,53 @@
-# Arxitektura qərarları (ADR)
+# Architecture decisions (ADR)
 
-## ADR-001: Mikroservis yox, modulyar monolit
-**Kontekst:** Bir nəfərlik/kiçik komanda, 1-20 min istifadəçi hədəfi.
-**Qərar:** Bir kod bazası: `core` (biznes məntiqi), `providers`, `workers`, `bot`. Telegram yalnız bir adapterdir.
-**Nəticə:** Sonradan veb panel/Mini App eyni `core`-u istifadə edə bilər. Ayrı servisə bölmək lazım olsa, sərhədlər hazırdır.
+## ADR-001: A modular monolith, not microservices
+**Context:** a one-person/small team, a target of 1-20k users.
+**Decision:** one codebase with layers: `core` (business logic), `providers`, `workers`, `bot`. Telegram is just one adapter.
+**Consequence:** a web dashboard or Mini App can later reuse the same `core`. If a service ever needs splitting out, the boundaries are already there.
 
-## ADR-002: Növbə = Postgres (`SKIP LOCKED`), Celery/Taskiq yox
-**Kontekst:** İş vahidləri: "vaxtı çatmış watch_key" və "göndərilməli bildiriş". Hər ikisi onsuz da Postgres sətridir.
-**Qərar:** Claim sorğusu `FOR UPDATE SKIP LOCKED` + `lease_until`. Ayrıca broker yoxdur.
-**Nəticə:** (+) sadə, durable, tranzaksiyalı, Redis outage-ı növbəni təsir etmir; replikalar təhlükəsizdir. (−) çox yüksək ötürmə (yüz minlərlə iş/saniyə) üçün uyğun deyil. Yük testi: claim sorğusu 300 min sətirdə 0.14 ms. Lazım olsa Taskiq sonradan əlavə olunar.
+## ADR-002: The queue is Postgres (`SKIP LOCKED`), not Celery/Taskiq
+**Context:** the units of work are "a watch_key that is due" and "a notification to send". Both are already Postgres rows.
+**Decision:** a claim query with `FOR UPDATE SKIP LOCKED` + `lease_until`. No separate broker.
+**Consequence:** (+) simple, durable, transactional, a Redis outage doesn't touch the queue, replicas are safe. (−) not suited to extremely high throughput (hundreds of thousands of jobs per second). Load test: the claim query takes 0.14 ms on 300k rows. Taskiq can be added later if needed.
 
-## ADR-003: Dedup vahidi `watch_key`
-**Qərar:** Provayderə sorğu abunəliyə yox, imzaya görə gedir; çevik tarixdə "bir ay = bir sorğu".
-**Nəticə:** 21× azalma (yük testi). Qiymət: istifadəçi-spesifik filtrlər (aviaşirkət, baqaj) imzaya daxil edilməlidir (hələ yoxdur) və ya post-filtr olmalıdır. "Növbəti N gün" rejimi bu səbəbdən çıxarıldı.
+## ADR-003: The dedup unit is the `watch_key`
+**Decision:** provider requests are made per signature, not per subscription; in flexible-date mode "one month = one request".
+**Consequence:** a 21× reduction (load test). Cost: user-specific filters (airline, baggage) must be part of the signature (not built yet) or applied as post-filters. The "next N days" mode was dropped for this reason.
 
-## ADR-004: Outbox Postgres-dədir
-**Qərar:** Poller bildirişi state ilə eyni tranzaksiyada yazır, broadcaster ayrıca göndərir.
-**Nəticə:** Redis itkisi bildirişi silmir, at-least-once çatdırılma, retry/backoff/audit cədvəldədir. Əvvəlki dizayndakı Redis siyahısı eviction ilə itə bilərdi.
+## ADR-004: The outbox lives in Postgres
+**Decision:** the poller writes the notification in the same transaction as the state; the broadcaster sends it separately.
+**Consequence:** losing Redis doesn't delete notifications, delivery is at-least-once, and retry/backoff/audit live in a table. The Redis list in the earlier design could have been lost to eviction.
 
-## ADR-005: Redis yalnız uçucu data üçün
-**Qərar:** FSM, provayder keşi, rate limit bucket-ları. `maxmemory-policy volatile-lru`, bütün açarlar TTL-lidir. Məntiqi DB-lər (0/1/2) ayrılmadı: eyni yaddaşı və eviction siyasətini paylaşırlar, ona görə faydasızdır.
+## ADR-005: Redis only for volatile data
+**Decision:** FSM, provider cache, rate-limit buckets. `maxmemory-policy volatile-lru`, and every key has a TTL. Logical databases (0/1/2) were not split: they share memory and the eviction policy, so the split gives no benefit.
 
-## ADR-006: Sayğac DB trigger-i ilə
-**Qərar:** `active_watch_count` `watches` üzərindəki trigger-lərlə yenilənir; janitor drift yoxlayır.
-**Nəticə:** tətbiq kodunda unudulma/sürüşmə riski yoxdur (əvvəlki dizaynda bu real problem idi).
+## ADR-006: The counter is maintained by DB triggers
+**Decision:** `active_watch_count` is updated by triggers on `watches`; the janitor checks for drift.
+**Consequence:** no risk of forgetting to update it in application code (a real problem in the earlier design).
 
-## ADR-007: Provayder interfeysi
-**Qərar:** `PriceProvider.offers()` yeganə sərhəddir; Cached → RateLimited → Raw sarğıları.
-**Nəticə:** İkinci provayder əlavə etmək = bir adapter. Tək provayderə asılılıq biznes riskidir; bu riski azaldır, aradan qaldırmır.
+## ADR-007: A provider interface
+**Decision:** `PriceProvider.offers()` / `explore()` are the only boundary; wrappers compose as Cached → RateLimited → Raw.
+**Consequence:** adding a second provider means writing one adapter. Depending on a single provider is a business risk; this reduces it but does not remove it.
 
-## ADR-008: Paylanmış rate limit (Redis Lua token bucket)
-**Qərar:** Telegram qlobal/istifadəçi limiti və provayder RPS bütün replikalar üçün Redis-də, vaxt Redis serverindən (`TIME`).
-**Nəticə:** `aiolimiter` kimi proses daxili limiterin "N replika = N × limit" problemi yoxdur.
+## ADR-008: A distributed rate limit (Redis Lua token bucket)
+**Decision:** the Telegram global/per-user limits and the provider RPS live in Redis for all replicas, with time taken from the Redis server (`TIME`).
+**Consequence:** none of the "N replicas = N × the limit" problem of in-process limiters such as `aiolimiter`.
 
-## ADR-009: Ödəniş Telegram Stars ilə (planlaşdırılıb)
-Telegram rəqəmsal məhsullar üçün Stars tələb edir (rəsmi qaydanı buraxılışdan əvvəl yoxlayın). Stripe əsas yol kimi nəzərdə tutulmayıb.
+## ADR-009: Payments via Telegram Stars (planned)
+Telegram requires Stars for digital goods (verify the official rules before launch). Stripe is not intended as the primary path.
 
-## ADR-010: Default izləmə rejimi "ay üzrə", axın 3 toxunuş
-**Kontekst:** 7-8 addımlı axında istifadəçilər addımlarda itirdi; dəqiq tarixi çoxları bilmir; dəqiq tarixli sorğular Data API keşində seyrəkdir.
-**Qərar:** Standart axın haraya → ay → hədəf. Haradan = ev şəhəri, tək istiqamət, birbaşa=yox. Qalanı "Ətraflı"/"Dəqiq tarix" altındadır. Addım mühərriki (`bot/handlers/flow.py`) hər addımda Geri/Ləğv verir (tarixçə FSM-dədir).
-**Nəticə:** (+) daha yüksək aktivləşdirmə, ay rejimi dedup üçün idealdır (bir ay = bir sorğu). (−) Free planın ayrıca "çevik izləmə" limiti mənasızlaşdı və götürüldü.
+## ADR-010: The default watch mode is "by month"; the flow is 3 taps
+**Context:** a 7-8 step flow lost users; many people don't know the exact date; exact-date queries are sparse in the Data API cache.
+**Decision:** the default flow is destination → month → target. Origin = home city, one-way, direct-only off. The rest sits behind "Details" / "Exact date". The flow engine (`bot/handlers/flow.py`) gives every step Back/Cancel (history lives in the FSM).
+**Consequence:** (+) higher activation, and month mode is ideal for dedup (one month = one request). (−) the Free plan's separate "flexible watch" limit became meaningless and was removed.
 
-## ADR-011: "Hər yerə" provayder interfeysinin hissəsidir, keşlənir
-`PriceProvider.explore()` ay üzrə ən ucuz istiqamətləri qaytarır; nəticə 1 saat keşlənir (singleflight ilə), beləliklə viral anda eyni sorğu bir dəfə gedir. Dünya şəhərlərinin adları statik siyahı + açıq `cities.json` (Redis-də 7 gün) ilə həll olunur; uğursuz olsa kod göstərilir.
+## ADR-011: "Anywhere" is part of the provider interface and is cached
+`PriceProvider.explore()` returns the cheapest destinations for a month; the result is cached for one hour (with singleflight), so in a viral moment the same query goes out once. World city names come from a static list plus the open `cities.json` (cached in Redis for 7 days); on failure the code is shown.
 
-## ADR-012: Sakit saatlar poller-də (göndərmədə yox)
-Bildiriş `available_at` ilə outbox-a yazılır; broadcaster dəyişməyib. Üstünlük: broadcaster sadə qalır, növbə gecikməsi metrikası yalnız "vaxtı çatmış" bildirişləri sayır. Çatışmazlıq: səhər çatdırılanda qiymət dəyişmiş ola bilər (bildirişdə qeyd olunur).
+## ADR-012: Quiet hours live in the poller, not in delivery
+The notification is written to the outbox with `available_at`; the broadcaster is unchanged. Upside: the broadcaster stays simple and the queue-lag metric counts only notifications that are due. Downside: by the time it is delivered in the morning the price may have changed (the notification says so).
+
+## ADR-013: The repository is English; the bot UI is multilingual
+**Context:** the repo is meant to become public eventually; the bot serves Azerbaijani, Russian and English users.
+**Decision:** all code, comments, docs, scripts and logs are English. User-facing text lives only in the i18n catalogs (`bot/i18n/{az,ru,en}.py`) and the static city names (`core/places.py`). A test verifies key/placeholder parity across languages.
+**Consequence:** contributors need no Azerbaijani; adding a language is a self-contained change (see the README).

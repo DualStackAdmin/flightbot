@@ -1,7 +1,7 @@
-# Könüllü avtomatik deploy: main-ə push və CI uğurlu olandan sonra serverdə ./scripts/update.sh işləyir.
-# Aktiv etmək üçün GitHub repo -> Settings -> Secrets and variables -> Actions:
-#   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY (özəl açar), DEPLOY_PATH (məs. /opt/flightbot)
-# Secret-lər təyin edilməyibsə job səssizcə keçilir.
+# Optional automatic deploy: after a push to main and a green CI run, ./scripts/update.sh runs on the server.
+# To enable: GitHub repo -> Settings -> Secrets and variables -> Actions:
+#   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY (private key), DEPLOY_PATH (e.g. /opt/flightbot)
+# If the secrets are not set the job is skipped silently.
 name: Deploy
 on:
   workflow_run:
@@ -24,7 +24,7 @@ jobs:
           APP_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
           if [ -z "$HOST" ] || [ -z "$KEY" ]; then
-            echo "DEPLOY_* secret-ləri təyin edilməyib, deploy keçildi."
+            echo "DEPLOY_* secrets are not set, deploy skipped."
             exit 0
           fi
           install -m 700 -d ~/.ssh

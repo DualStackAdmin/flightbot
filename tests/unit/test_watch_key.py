@@ -71,7 +71,7 @@ def test_round_trip_month_mode_return_before_depart():
 def test_horizon_days_exact_and_month():
     assert mk(depart_date=TODAY + timedelta(days=20)).horizon_days(TODAY) == 20
     month_key = mk(date_mode="month", depart_date=date(2026, 12, 1))
-    assert 40 < month_key.horizon_days(TODAY) < 60  # ayın ortası
+    assert 40 < month_key.horizon_days(TODAY) < 60  # the middle of the month
 
 
 def test_horizon_never_negative():

@@ -8,7 +8,7 @@ from flightbot.providers.places import PlacesProvider
 
 @dataclass(frozen=True, slots=True)
 class Deps:
-    """Handler-lərə yeridilən xidmətlər (aiogram workflow data: `deps`)."""
+    """Services injected into handlers (aiogram workflow data: `deps`)."""
 
     provider: PriceProvider
     places: PlacesProvider

@@ -1,8 +1,8 @@
-"""Provayder sarğıları: paylanmış rate limit + Redis keşi + singleflight.
+"""Provider wrappers: distributed rate limit + Redis cache + singleflight.
 
-Əvvəlki dizayndakı problem: `async with redis.lock(...) as acquired` bool qaytarmır və
-blocking_timeout bitəndə LockError atır. Burada SET NX + gözləmə + fallback işlədilir:
-kilidi tuta bilməyən sorğu keşin dolmasını gözləyir, dolmasa özü sorğu göndərir (heç vaxt xəta atmır).
+The problem with the earlier design: `async with redis.lock(...) as acquired` doesn't return a bool and
+raises LockError when blocking_timeout expires. Here SET NX + waiting + fallback is used:
+a request that can't take the lock waits for the cache to fill and, if it doesn't, sends the request itself (never raises).
 """
 
 import asyncio
@@ -23,13 +23,13 @@ _RELEASE_LUA = """
 if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end
 """
 NEGATIVE_TTL_CAP_S = 600
-FETCH_LIMIT = 30  # keş həmişə eyni limitlə doldurulur ki, açar sadə qalsın
-EXPLORE_TTL_S = 3600  # "hər yerə" nəticəsi bir saat keşlənir (istifadəçi tərəfindən başladılan sorğu)
+FETCH_LIMIT = 30  # the cache is always filled with the same limit so the key stays simple
+EXPLORE_TTL_S = 3600  # the "anywhere" result is cached for one hour (a user-initiated request)
 EXPLORE_FETCH_LIMIT = 40
 
 
 class RateLimitedProvider:
-    """Replikalar arası paylaşılan provayder RPS limiti."""
+    """Provider RPS limit shared across replicas."""
 
     def __init__(self, inner: PriceProvider, bucket: TokenBucket, *, rps: float) -> None:
         self._inner = inner
@@ -81,7 +81,7 @@ class CachedProvider:
 
     async def _set(self, ck: str, quotes: list[PriceQuote], ttl: int) -> None:
         if not quotes:
-            ttl = min(ttl, NEGATIVE_TTL_CAP_S)  # boş nəticəni qısa saxla
+            ttl = min(ttl, NEGATIVE_TTL_CAP_S)  # keep an empty result short
         await self._redis.set(ck, orjson.dumps([quote_to_json(q) for q in quotes]), ex=ttl)
 
     async def _cached(
@@ -92,7 +92,7 @@ class CachedProvider:
         *,
         fresh: bool,
     ) -> list[PriceQuote]:
-        """Keş + singleflight: eyni açar üçün paralel sorğular 1 provayder sorğusuna birləşir."""
+        """Cache + singleflight: parallel requests for the same key collapse into one provider request."""
         if not fresh:
             hit = await self._get(ck)
             if hit is not None:
@@ -104,7 +104,7 @@ class CachedProvider:
         token = uuid.uuid4().hex
         got_lock = bool(await self._redis.set(lock_key, token, nx=True, px=self._lock_ttl_ms))
         if not got_lock and not fresh:
-            # Başqası artıq sorğu göndərir: keşin dolmasını gözlə
+            # Someone else is already requesting: wait for the cache to fill
             loop = asyncio.get_running_loop()
             deadline = loop.time() + self._wait
             while loop.time() < deadline:
@@ -113,7 +113,7 @@ class CachedProvider:
                 if hit is not None:
                     metrics.PROVIDER_CACHE.labels("coalesced").inc()
                     return hit
-            # gözləmə bitdi: özümüz sorğu göndəririk (xəta atmırıq)
+            # the wait is over: we send the request ourselves (we don't raise)
         try:
             quotes = await fetch()
             await self._set(ck, quotes, ttl)

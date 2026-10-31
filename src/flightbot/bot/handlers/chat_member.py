@@ -1,4 +1,4 @@
-"""İstifadəçi botu bloklayanda/blokdan çıxaranda abunəlikləri avtomatik dondurur/bərpa edir."""
+"""Automatically freezes/restores subscriptions when a user blocks/unblocks the bot."""
 
 from aiogram import Router
 from aiogram.types import ChatMemberUpdated

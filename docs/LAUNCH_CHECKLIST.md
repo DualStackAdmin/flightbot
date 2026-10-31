@@ -1,47 +1,47 @@
-# Buraxılışdan əvvəl yoxlama siyahısı
+# Pre-launch checklist
 
-Bu layihədə hər şey real Postgres/Redis-ə qarşı test olunub, amma aşağıdakılar **real hesab/token tələb edir** və hələ yoxlanmayıb.
+Everything in this project is tested against real Postgres/Redis, but the items below **need real accounts/tokens** and have not been verified yet.
 
-## 1. Travelpayouts (ən vacib, adapter yalnız saxta HTTP ilə sınanıb)
-- [ ] Real tokenlə bir sorğu: `PROVIDER=travelpayouts` və `/search`. Cavab sahələri (`departure_at`, `price`, `airline`, `transfers`, `link`, `currency`) gözlənildiyi kimidirmi? (`providers/travelpayouts.py::parse_offers`)
-- [ ] `departure_at=YYYY-MM` (ay sorğusu) və `return_at=YYYY-MM` real olaraq işləyirmi, yoxsa ay rejimi başqa cür sorğu tələb edir?
-- [ ] AZN valyutası dəstəklənirmi? Dəstəklənmirsə `SUPPORTED_CURRENCIES`-dən çıxarın və ya çevirmə əlavə edin.
-- [ ] Rəsmi sorğu limitləri və `PROVIDER_RPS` dəyəri. Data API-nin keş yaşı (bildirişdəki "keşlənmiş data" qeydi həqiqətə uyğundurmu).
-- [ ] Partnyor şərtləri: keşləmə/göstərmə qaydaları, real vaxtlı Search API üçün ayrıca təsdiq lazımdırmı.
-- [ ] `link` sahəsinin domeni/prefiksi və **marker formatı**: `core/affiliate.py` `marker=<MARKER>.<SUB_ID>` istifadə edir. Komissiyanın düzgün izləndiyini bir test sifarişi ilə təsdiqləyin.
-- [ ] `autocomplete` cavab formatı (`providers/places.py`); xəta olsa statik siyahıya düşür.
+## 1. Travelpayouts (most important; the adapter is only tested against mocked HTTP)
+- [ ] Make one real request: `PROVIDER=travelpayouts` and `/search`. Do the response fields (`departure_at`, `price`, `airline`, `transfers`, `link`, `currency`) match expectations? (`providers/travelpayouts.py::parse_offers`)
+- [ ] Does `departure_at=YYYY-MM` (a month query) and `return_at=YYYY-MM` really work, or does month mode need a different request?
+- [ ] Is the AZN currency supported? If not, remove it from `SUPPORTED_CURRENCIES` or add conversion.
+- [ ] The official rate limits and the right `PROVIDER_RPS`. The age of Data API cache entries (is the "cached data" notice in notifications accurate?).
+- [ ] Partner-program terms: caching/display rules, and whether the real-time Search API needs separate approval.
+- [ ] The domain/prefix of the `link` field and the **marker format**: `core/affiliate.py` uses `marker=<MARKER>.<SUB_ID>`. Confirm commissions are attributed correctly with one test booking.
+- [ ] The `autocomplete` response format (`providers/places.py`); on failure it falls back to the static list.
 
 ## 2. Telegram
-- [ ] BotFather-də bot yaradın; `BOT_TOKEN`. Əmrlər başlanğıcda avtomatik təyin olunur (az/ru/en).
-- [ ] Webhook: HTTPS domen (Caddy profili), `WEBHOOK_SECRET` uzun təsadüfi sətir. Secret yoxlaması test olunub (səhv token → 401).
-- [ ] Real axın: `/start` → `/new` → bildiriş → 👍/👎 → botu blokla → `/start`. (Bot hələ real Telegram ilə işlədilməyib.)
-- [ ] Ödəniş: Telegram rəqəmsal xidmətlər üçün Stars tələb edir. Pro-nu satmazdan əvvəl rəsmi qaydaları yoxlayın (Stars hələ yazılmayıb).
-- [ ] Zirvə yükündə Telegram-ın ödənişli yayım seçimi (30 msg/s-dən yuxarı) mövcuddur; lazım olsa ayrıca dəyərləndirin.
+- [ ] Create the bot in BotFather; set `BOT_TOKEN`. Commands are set automatically at startup (az/ru/en).
+- [ ] Webhook: an HTTPS domain (the Caddy profile) and `WEBHOOK_SECRET` as a long random string. The secret check is tested (a wrong token returns 401).
+- [ ] Real flow: `/start` → `/new` → notification → 👍/👎 → block the bot → `/start`. (The bot has not been run against real Telegram yet.)
+- [ ] Payments: Telegram requires Stars for digital services. Verify the official rules before selling Pro (Stars are not built yet).
+- [ ] At peak load Telegram offers paid broadcasts above 30 msg/s; evaluate it separately if needed.
 
-## 3. Hüquqi və məxfilik
-- [ ] Məxfilik siyasəti və istifadə şərtləri (bot təsvirində/`/help`-də link).
-- [ ] Saxlanılan data: Telegram ID, dil, valyuta, izləmələr, bildirişlər. `/delete` mövcuddur və test olunub.
-- [ ] Yerli şəxsi məlumat qanunu / Avropa istifadəçiləri üçün GDPR tələblərinin yoxlanması (hüquqşünasla).
-- [ ] Affiliate açıqlaması: bildirişlərdəki linklər partnyor linkidir.
+## 3. Legal and privacy
+- [ ] A privacy policy and terms of service (linked from the bot description / `/help`).
+- [ ] Stored data: Telegram ID, language, currency, watches, notifications. `/delete` exists and is tested.
+- [ ] Check local personal-data law / GDPR for EU users (with a lawyer).
+- [ ] Affiliate disclosure: links in notifications are partner links.
 
-## 4. Əməliyyat
-- [ ] Postgres backup/PITR işləyir və bərpa bir dəfə sınanıb.
-- [ ] `.env` gizlidir, `POSTGRES_PASSWORD` dəyişdirilib, `ENV=prod`.
-- [ ] `SENTRY_DSN` və Alertmanager (və ya digər xəbərdarlıq kanalı) qoşulub. `deploy/alerts.yml` tək başına xəbər göndərmir.
-- [ ] `docker compose` real serverdə bir dəfə qaldırılıb (burada Docker işlədilməyib).
-- [ ] Server resursu: 1 vCPU/2 GB ilk mərhələ üçün yetərlidir (yük testi 1 CPU-da edilib), amma real provayder gecikməsi ilə yenidən ölçün.
+## 4. Operations
+- [ ] Postgres backup/PITR works and a restore has been tried once.
+- [ ] `.env` is private, `POSTGRES_PASSWORD` changed, `ENV=prod`.
+- [ ] `SENTRY_DSN` and Alertmanager (or another alert channel) connected. `deploy/alerts.yml` alone sends nothing.
+- [ ] `docker compose` started once on a real server (Docker was not available where this was generated).
+- [ ] Server sizing: 1 vCPU / 2 GB is enough at first (the load test ran on 1 CPU), but measure again with real provider latency.
 
-## 5. Keyfiyyət (ilk 2 həftə, qapalı beta)
-- [ ] 20-50 istifadəçi, `python -m flightbot.cli stats` hər gün.
-- [ ] Hədəflər: 👎 < 10%, bloklama < 5%, `telegram retry_after` = 0, queue lag < 60 san.
-- [ ] Bildirişlərin real "alına bilən" qiymətə uyğunluğunu əl ilə yoxlayın (keş qiyməti saytda fərqli ola bilər).
+## 5. Quality (first 2 weeks, closed beta)
+- [ ] 20-50 users; run `python -m flightbot.cli stats` daily.
+- [ ] Targets: 👎 < 10%, blocks < 5%, Telegram `retry_after` = 0, queue lag < 60 s.
+- [ ] Manually compare notified prices with what is really bookable (a cached price may differ on the site).
 
-## 6. Yeni funksiyalar üçün əlavə yoxlamalar (v0.2)
-- [ ] **Marker:** `794979` Travelpayouts kabinetində "Partner ID / marker" kimi görünür? (referal proqramı kodu deyil). Bir test klikindən sonra statistikada `sub_id` ilə görünür?
-- [ ] **"Hər yerə" (`explore`)**: real tokenlə `prices_for_dates` sorğusu `destination` verilmədən və `unique=true` ilə hər istiqamətdən yalnız ən ucuz bileti qaytarır? (`providers/travelpayouts.py::explore`). Qaytarmırsa sorğu başqa endpoint-ə keçirilməlidir.
-- [ ] **Ad həlli:** `https://api.travelpayouts.com/data/en/cities.json` açıq və `code`, `name`, `country_code` sahələrini qaytarır? (Əks halda dünya şəhərləri kod kimi görünür, sistem sınmır.)
-- [ ] **Sakit saatlar:** real telefonda gecə vaxtı bildirişin səhərə saxlandığını bir dəfə yoxlayın; hədəf auditoriya başqa saat qurşağındadırsa `QUIET_TZ`.
-- [ ] **Hədəf düymələri:** −15% tövsiyəsi real qiymət paylanmasında məntiqlidir? Rəy və yaradılan izləmə hədəflərinə baxıb tənzimləyin (`bot/parsing.py::quick_targets`).
-- [ ] **Azərbaycan mətnləri:** doğma danışan biri bütün `bot/i18n/az.py` mətnlərini oxuyub tonu ("siz", sözlər) düzəltməlidir.
-- [ ] **5 real adamla sınaq:** heç nə izah etmədən telefonda ilk izləməni yaratmalarını izləyin; haradan ilişdiklərini yazın.
-- [ ] **GitHub/Linux:** `install.sh` təmiz Ubuntu serverində bir dəfə işlədilsin; `update.sh` və (istifadə edirsinizsə) `deploy.yml` sınansın.
+## 6. Extra checks for v0.2 features
+- [ ] **Marker:** does `794979` show up in the Travelpayouts dashboard as "Partner ID / marker" (not a referral-program code)? After a test click, does it appear in the statistics with its `sub_id`?
+- [ ] **"Anywhere" (`explore`)**: with a real token, does the `prices_for_dates` request without `destination` and with `unique=true` return only the cheapest ticket per destination? (`providers/travelpayouts.py::explore`). If not, the request has to move to another endpoint.
+- [ ] **Name resolution:** is `https://api.travelpayouts.com/data/en/cities.json` open and does it return `code`, `name`, `country_code`? (Otherwise world cities show as codes; the system doesn't break.)
+- [ ] **Quiet hours:** check once on a real phone at night that a notification is held until morning; set `QUIET_TZ` if your audience is in another time zone.
+- [ ] **Target buttons:** is the −15% recommendation sensible on real price distributions? Look at user feedback and created targets and tune it (`bot/parsing.py::quick_targets`).
+- [ ] **Translations:** a native speaker should read all of `bot/i18n/az.py` (and `ru.py`) and fix tone and wording.
+- [ ] **5 real people:** watch them create their first watch on a phone without any explanation and write down where they get stuck.
+- [ ] **GitHub/Linux:** run `install.sh` once on a clean Ubuntu server; test `update.sh` and (if you use it) `deploy.yml`.

@@ -1,4 +1,4 @@
-"""users.quiet_hours: sakit saatlar (default açıq)
+"""users.quiet_hours: quiet hours (enabled by default)
 
 Revision ID: 0002
 Revises: 0001

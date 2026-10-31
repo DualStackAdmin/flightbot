@@ -1,13 +1,13 @@
-"""Alert mühərriki: məhsulun beyni. Təmiz funksiya (DB və şəbəkəsiz), tam test olunur.
+"""Alert engine: the brain of the product. A pure function (no DB, no network), fully tested.
 
-Qaydalar (spesifikasiya v0.1):
-  1. Trigger: qiymət <= hədəf
-  2. Təkrar yox: əvvəlki bildirişdən ən azı 5% ucuz olmadıqca yenidən göndərmə
-  3. Re-arm: qiymət hədəfdən yuxarı qalxanda izləmə yenidən silahlanır
-  4. Cooldown: hər izləmə üçün min. 6 saat
-  5. Gündəlik limit: plana görə
-  6. Köhnə data: 48 saatdan köhnə qiymət bildirişə getmir
-  7. Anomaliya: median-dan 60%-dən çox aşağı qiymət ikinci sorğu ilə təsdiqlənməlidir
+Rules (spec v0.1):
+  1. Trigger: price <= target
+  2. No repeats: don't notify again unless at least 5% cheaper than the previous notification
+  3. Re-arm: the watch is re-armed when the price rises above the target
+  4. Cooldown: at least 6 hours per watch
+  5. Daily limit: depends on the plan
+  6. Stale data: a price older than 48 hours is not notified
+  7. Anomaly: a price more than 60% below the median must be confirmed by a second request
 """
 
 from dataclasses import dataclass
@@ -54,15 +54,15 @@ class Decision:
 
 
 def decide(inp: AlertInput) -> Decision:
-    # 6. köhnə data: heç bir state dəyişikliyi etmədən atılır
+    # 6. stale data: dropped without changing any state
     if inp.found_at is not None and inp.now - inp.found_at > STALE_AFTER:
         return Decision(Verdict.STALE)
 
-    # 1 + 3. hədəfdən yuxarı: silahsızdırsa yenidən silahlandır
+    # 1 + 3. above target: re-arm if it was disarmed
     if inp.price > inp.target_price:
         return Decision(Verdict.ABOVE_TARGET, rearm=not inp.armed)
 
-    # 2. silahsızdırsa yalnız əvvəlki bildirişdən ≥5% ucuzlaşma halında
+    # 2. when disarmed, only notify again if at least 5% cheaper than the last notification
     if not inp.armed and inp.last_notified_price is not None:
         if inp.price > inp.last_notified_price * REPEAT_IMPROVEMENT:
             return Decision(Verdict.NOT_CHEAPER_ENOUGH)
@@ -71,7 +71,7 @@ def decide(inp: AlertInput) -> Decision:
     if inp.last_notified_at is not None and inp.now - inp.last_notified_at < COOLDOWN:
         return Decision(Verdict.COOLDOWN)
 
-    # 5. gündəlik limit
+    # 5. daily limit
     if inp.notifications_last_24h >= inp.daily_limit:
         return Decision(Verdict.DAILY_LIMIT)
 

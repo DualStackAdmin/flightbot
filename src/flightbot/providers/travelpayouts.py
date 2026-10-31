@@ -1,11 +1,11 @@
-"""Travelpayouts / Aviasales Data API adapteri (prices_for_dates).
+"""Travelpayouts / Aviasales Data API adapter (prices_for_dates).
 
-DİQQƏT (real token ilə mütləq yoxlayın): cavab sahələri və limitlər sənədləşmədəki
-məlumata əsaslanır və dəyişə bilər. Data API son ~48 saatda istifadəçilərin tapdığı
-KEŞLƏNMİŞ qiymətləri verir, "indi alına bilən" qiymətin zəmanəti deyil. Bildiriş mətni bunu qeyd edir.
+NOTE (verify with a real token): the response fields and limits are based on the documentation
+and may change. The Data API serves CACHED prices found by users in roughly the last 48 hours; it is not a guarantee
+of a price that is "bookable right now". The notification text says so.
 
-`explore()` (hər yerə axtarışı) `destination` verilmədən və `unique=true` ilə eyni endpoint-i çağırır:
-sənədə görə hər istiqamət üçün yalnız ən ucuz bilet qayıdır. Bu davranışı real tokenlə yoxlayın.
+`explore()` ("anywhere" search) calls the same endpoint without `destination` and with `unique=true`:
+per the docs only the cheapest ticket per destination is returned. Verify this behavior with a real token.
 """
 
 import asyncio
@@ -100,7 +100,7 @@ class TravelpayoutsProvider:
         return params
 
     async def _fetch(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Retry/backoff və xəta xəritələməsi: bütün sorğu növləri üçün ortaq."""
+        """Retry/backoff and error mapping: shared by all request types."""
         last_exc: Exception | None = None
         for attempt in range(self._retries + 1):
             try:
@@ -119,7 +119,7 @@ class TravelpayoutsProvider:
                     last_exc = ProviderError(f"HTTP {resp.status_code}")
                 elif resp.status_code in (401, 403):
                     metrics.PROVIDER_REQUESTS.labels(self.name, "auth").inc()
-                    raise ProviderError(f"auth failed: HTTP {resp.status_code} (token/hesab yoxlayın)")
+                    raise ProviderError(f"auth failed: HTTP {resp.status_code} (check the token/account)")
                 elif resp.status_code >= 400:
                     metrics.PROVIDER_REQUESTS.labels(self.name, "4xx").inc()
                     raise ProviderError(f"HTTP {resp.status_code}: {resp.text[:200]}")
@@ -154,13 +154,13 @@ class TravelpayoutsProvider:
             "sorting": "price",
             "direct": "true" if direct_only else "false",
             "one_way": "true",
-            "unique": "true",  # destination verilmədikdə hər istiqamətdən yalnız ən ucuzu
-            "limit": max(limit * 3, 30),  # filtrdən (origin==dest, dublikat) sonra kifayət qədər qalsın
+            "unique": "true",  # only the cheapest per destination when no destination is given
+            "limit": max(limit * 3, 30),  # enough left after filtering (origin==dest, duplicates)
             "page": 1,
         }
         quotes = parse_rows(await self._fetch(params), currency, self.name)
         best: dict[str, PriceQuote] = {}
-        for q in quotes:  # qiymətə görə artan
+        for q in quotes:  # sorted by price ascending
             if q.destination and q.destination != origin and q.destination not in best:
                 best[q.destination] = q
         return list(best.values())[:limit]

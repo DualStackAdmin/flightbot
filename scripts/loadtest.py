@@ -1,14 +1,14 @@
-"""Yük/miqyas yoxlaması (lokal, real Postgres + Redis, Telegram və provayder saxtadır).
+"""Load / scale check (local, real Postgres + Redis, fake Telegram and provider).
 
-İstifadə:  python -m scripts.loadtest --yes [--users 7000 --keys 1000 --per-user 3]
-DİQQƏT: DATABASE_URL bazasındakı bütün izləmə datasını SİLİR. Yalnız dev/test bazasında işlədin.
+Usage:  python -m scripts.loadtest --yes [--users 7000 --keys 1000 --per-user 3]
+WARNING: this DELETES all watch data in the DATABASE_URL database. Use it on a dev/test database only.
 
-Nəyi yoxlayır:
-  1. Fan-out: N izləmə -> yalnız K provayder sorğusu (dedup işləyir?)
-  2. Gündəlik limit: heç bir Free istifadəçi 3-dən çox bildiriş almır?
-  3. Dublikat yoxdur: ikinci dövrdə eyni qiymət yeni bildiriş yaratmır?
-  4. Broadcaster boru kəmərinin ötürmə qabiliyyəti (Telegram şəbəkəsi olmadan)
-  5. Scheduler claim sorğusu böyük cədvəldə indeksdən istifadə edir?
+What it verifies:
+  1. Fan-out: N watches -> only K provider requests (does dedup work?)
+  2. Daily limit: no Free user receives more than 3 notifications?
+  3. No duplicates: the same price in the second cycle creates no new notification?
+  4. Throughput of the broadcaster pipeline (without the Telegram network)
+  5. Does the scheduler claim query use the index on a large table?
 """
 
 import argparse
@@ -98,7 +98,7 @@ async def main(users: int, keys: int, per_user: int) -> None:
             "broadcaster_concurrency": 20,
             "telegram_global_rps": 1_000_000.0,
             "telegram_user_rps": 1_000_000.0,
-            "quiet_start_hour": 0,  # sakit saatlar söndürülüb: ölçmə günün vaxtından asılı olmasın
+            "quiet_start_hour": 0,  # quiet hours disabled: the measurement must not depend on the time of day
             "quiet_end_hour": 0,
         }
     )
@@ -107,14 +107,14 @@ async def main(users: int, keys: int, per_user: int) -> None:
     redis = Redis.from_url(settings.redis_url)
     await redis.flushdb()
 
-    print(f"Seed: {users} istifadəçi x {per_user} izləmə, {keys} unikal marşrut ...")
+    print(f"Seed: {users} users x {per_user} watches, {keys} unique routes ...")
     t0 = time.perf_counter()
     await seed(sm, users, keys, per_user)
     n_watches = await one(sm, "select count(*) from watches")
     n_keys = await one(sm, "select count(*) from watch_keys")
     ratio = n_watches / n_keys
     print(
-        f"  {n_watches} izləmə, {n_keys} unikal açar (açar başına orta {ratio:.1f} abunəçi), {time.perf_counter() - t0:.1f}s"
+        f"  {n_watches} watches, {n_keys} unique keys (avg {ratio:.1f} subscribers per key), {time.perf_counter() - t0:.1f}s"
     )
 
     provider = BulkProvider()
@@ -128,11 +128,11 @@ async def main(users: int, keys: int, per_user: int) -> None:
         sm, "select max(c) from (select count(*) c from notifications group by user_id) x"
     )
     print(
-        f"\n[1] Poller: {dt:.1f}s, provayder sorğusu = {provider.calls} (izləmə sayı: {n_watches}) -> {n_watches / provider.calls:.1f}x azalma"
+        f"\n[1] Poller: {dt:.1f}s, provider requests = {provider.calls} (watches: {n_watches}) -> {n_watches / provider.calls:.1f}x reduction"
     )
-    print(f"    yaranan bildiriş: {notifs}; istifadəçi başına maksimum: {max_per_user} (Free limiti 3)")
-    assert provider.calls == n_keys, "hər açar yalnız 1 dəfə sorğulanmalı idi"
-    assert max_per_user <= 3, "gündəlik limit pozulub!"
+    print(f"    notifications created: {notifs}; max per user: {max_per_user} (Free limit 3)")
+    assert provider.calls == n_keys, "every key should have been requested exactly once"
+    assert max_per_user <= 3, "daily limit violated!"
 
     before = notifs
     provider.calls = 0
@@ -144,7 +144,7 @@ async def main(users: int, keys: int, per_user: int) -> None:
         pass
     after = await one(sm, "select count(*) from notifications")
     print(
-        f"[3] İkinci dövr (qiymət dəyişməyib): yeni bildiriş = {after - before} (dublikat yoxdur: {after == before})"
+        f"[3] Second cycle (price unchanged): new notifications = {after - before} (no duplicates: {after == before})"
     )
     assert after == before
 
@@ -156,12 +156,12 @@ async def main(users: int, keys: int, per_user: int) -> None:
     dt = time.perf_counter() - t0
     sent = await one(sm, "select count(*) from notifications where status='sent'")
     print(
-        f"[4] Broadcaster (Telegram şəbəkəsiz, saxta bot): {sent} bildiriş / {dt:.1f}s = {sent / dt:.0f} msg/s boru kəməri tavanı"
+        f"[4] Broadcaster (no Telegram network, fake bot): {sent} notifications / {dt:.1f}s = {sent / dt:.0f} msg/s pipeline ceiling"
     )
-    print(f"    (real tavan Telegram limiti ilə təyin olunur: ~25 msg/s => {sent / 25 / 60:.1f} dəqiqə)")
+    print(f"    (the real ceiling is set by the Telegram limit: ~25 msg/s => {sent / 25 / 60:.1f} minutes)")
 
-    # 5. Claim sorğusunun indeksdən istifadəsi (böyük cədvəl)
-    print("\n[5] Claim sorğusu planı: 300 000 'passiv' açar + 2 000 vaxtı çatmış aktiv açar ...")
+    # 5. Index usage of the claim query (large table)
+    print("\n[5] Claim query plan: 300,000 'inactive' keys + 2,000 due active keys ...")
     async with sm.begin() as s:
         await s.execute(
             text(
@@ -195,7 +195,7 @@ async def main(users: int, keys: int, per_user: int) -> None:
     for (line,) in plan:
         print("   ", line)
     total = await one(sm, "select count(*) from watch_keys")
-    print(f"    cədvəl: {total} sətir")
+    print(f"    table: {total} rows")
 
     await redis.flushdb()
     await redis.aclose()
@@ -204,11 +204,11 @@ async def main(users: int, keys: int, per_user: int) -> None:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--yes", action="store_true", help="bazanı silməyi təsdiqləyirəm")
+    ap.add_argument("--yes", action="store_true", help="I confirm that the database will be wiped")
     ap.add_argument("--users", type=int, default=7000)
     ap.add_argument("--keys", type=int, default=1000)
     ap.add_argument("--per-user", type=int, default=3)
     a = ap.parse_args()
     if not a.yes:
-        raise SystemExit("--yes verilməyib: baza silinəcəyi üçün dayandırıldı")
+        raise SystemExit("--yes not given: aborting because the database would be wiped")
     asyncio.run(main(a.users, a.keys, a.per_user))

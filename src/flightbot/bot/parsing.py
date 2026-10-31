@@ -1,4 +1,4 @@
-"""İstifadəçi girişinin təhlili (tarix, qiymət). Saf funksiyalar: tam test olunur."""
+"""Parsing of user input (dates, prices). Pure functions, fully tested."""
 
 import re
 from datetime import date
@@ -12,7 +12,7 @@ MAX_PRICE = Decimal("100000")
 
 
 def parse_user_date(text: str, today: date) -> date | None:
-    """GG.AA.İİİİ, GG.AA.İİ, GG.AA (növbəti baş verən), İİİİ-AA-GG. Yanlışdırsa None."""
+    """DD.MM.YYYY, DD.MM.YY, DD.MM (next occurrence), YYYY-MM-DD. None if invalid."""
     text = (text or "").strip()
     try:
         if m := _ISO.match(text):
@@ -32,9 +32,9 @@ def parse_user_date(text: str, today: date) -> date | None:
 
 
 def parse_price(text: str) -> Decimal | None:
-    """'120', '120.5', '120,5', '120 USD' -> Decimal. 0, mənfi, nəhəng və ya anlaşılmaz -> None."""
+    """'120', '120.5', '120,5', '120 USD' -> Decimal. None for zero, negative, huge or unparseable input."""
     text = text or ""
-    if any(ch in text for ch in "-−–+"):  # "-5" səssizcə 5-ə çevrilməməlidir
+    if any(ch in text for ch in "-−–+"):  # "-5" must not silently become 5
         return None
     cleaned = re.sub(r"[^\d.,]", "", text.replace(" ", ""))
     if not cleaned:
@@ -50,7 +50,7 @@ def parse_price(text: str) -> Decimal | None:
 
 
 def next_months(today: date, n: int = 10) -> list[date]:
-    """Cari aydan başlayaraq n ayın ilk günləri."""
+    """First days of n months, starting with the current month."""
     out: list[date] = []
     y, m = today.year, today.month
     for _ in range(n):
@@ -75,5 +75,5 @@ def month_token(d: date) -> str:
 
 
 def quick_targets(current: Decimal, percents: tuple[int, ...] = (15, 10, 25)) -> list[tuple[int, int]]:
-    """(faiz, hədəf qiymət) cütləri; hədəf ən azı 1. Birincisi (15%) tövsiyə olunandır."""
+    """(percent, target price) pairs; the target is at least 1. The first one (15%) is the recommendation."""
     return [(p, max(1, int(current * (100 - p) / 100))) for p in percents]

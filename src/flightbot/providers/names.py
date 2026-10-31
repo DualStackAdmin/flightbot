@@ -1,8 +1,8 @@
-"""Şəhər/ölkə adlarının həlli ("hər yerə" nəticələrində dünya şəhərləri üçün).
+"""Resolution of city/country names (for world cities in "anywhere" results).
 
-Əvvəl statik siyahı (az/ru/en adlar), sonra Travelpayouts-un açıq `cities.json` datası (ingiliscə ad + ölkə kodu,
-Redis-də 7 gün keşlənir), axırda kodun özü. Format real sorğu ilə yoxlanmalıdır; uğursuz olsa sistem sınmır,
-yalnız statik adlar və kod göstərilir.
+First the static list (az/ru/en names), then Travelpayouts' open `cities.json` data (English name + country code,
+cached in Redis for 7 days), finally the code itself. The format must be verified with a real request; if it fails
+the system does not break, it only shows static names and the code.
 """
 
 import asyncio
@@ -65,7 +65,7 @@ class PlaceNames:
                 self._map = self.parse_cities(resp.json())
                 if self._map:
                     await self._redis.set(REDIS_KEY, orjson.dumps(self._map), ex=CACHE_TTL_S)
-            except Exception as exc:  # noqa: BLE001  (ad həlli kritik deyil)
+            except Exception as exc:  # noqa: BLE001  (name resolution is not critical)
                 log.warning("place_names_load_failed", error=repr(exc))
                 self._failed_until = time.monotonic() + RETRY_AFTER_FAILURE_S
 

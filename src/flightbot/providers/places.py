@@ -1,4 +1,4 @@
-"""Şəhər/aeroport axtarışı (istifadəçi IATA kodunu bilmək məcburiyyətində deyil)."""
+"""City/airport search (the user doesn't have to know the IATA code)."""
 
 from typing import Protocol
 
@@ -22,7 +22,7 @@ class StaticPlaces:
 
 
 class TravelpayoutsPlaces:
-    """Travelpayouts autocomplete (cavab formatını real sorğu ilə yoxlayın)."""
+    """Travelpayouts autocomplete (verify the response format with a real request)."""
 
     def __init__(self, client: httpx.AsyncClient, url: str = AUTOCOMPLETE_URL) -> None:
         self._client = client
@@ -56,7 +56,7 @@ class TravelpayoutsPlaces:
 
 
 class FallbackPlaces:
-    """Əsas provayder uğursuz olsa və ya boş qaytarsa statik siyahıya düşür."""
+    """Falls back to the static list if the primary provider fails or returns nothing."""
 
     def __init__(self, primary: PlacesProvider, fallback: PlacesProvider) -> None:
         self._primary = primary

@@ -27,7 +27,7 @@ from flightbot.providers.travelpayouts import TravelpayoutsProvider
         (12, 23, 8, False),
         (3, 1, 5, True),
         (5, 1, 5, False),
-        (3, 0, 0, False),  # start==end: söndürülüb
+        (3, 0, 0, False),  # start==end: disabled
     ],
 )
 def test_quiet_window(hour, start, end, expected):
@@ -35,24 +35,24 @@ def test_quiet_window(hour, start, end, expected):
 
 
 def at(h: int, m: int = 0) -> datetime:
-    # Bakı = UTC+4
+    # Baku = UTC+4
     return datetime(2026, 11, 1, h, m, tzinfo=UTC)
 
 
 def test_outside_quiet_hours_delivers_immediately():
-    now = at(10)  # Bakı 14:00
+    now = at(10)  # Baku 14:00
     assert deliver_after(now, tz="Asia/Baku", start_hour=23, end_hour=8) == now
 
 
 def test_inside_quiet_hours_is_held_until_morning_in_user_timezone():
-    now = at(21, 30)  # Bakı 01:30
+    now = at(21, 30)  # Baku 01:30
     out = deliver_after(now, tz="Asia/Baku", start_hour=23, end_hour=8, rng=random.Random(1))
     local = out.astimezone(__import__("zoneinfo").ZoneInfo("Asia/Baku"))
     assert local.hour == 8 and local.minute < 15 and local.day == 2
 
 
 def test_late_evening_rolls_over_to_next_day():
-    now = at(19, 30)  # Bakı 23:30
+    now = at(19, 30)  # Baku 23:30
     out = deliver_after(now, tz="Asia/Baku", start_hour=23, end_hour=8, rng=random.Random(2))
     assert out.day == 2 and out > now
 
@@ -62,10 +62,10 @@ def test_morning_jitter_spreads_delivery():
     outs = {
         deliver_after(now, tz="Asia/Baku", start_hour=23, end_hour=8, rng=random.Random(i)) for i in range(30)
     }
-    assert len(outs) > 10  # səhər 08:00-da hamıya eyni anda yağmır
+    assert len(outs) > 10  # it doesn't rain on everyone at 08:00
 
 
-# ------------------------------------------------------------------ marşrut mətni
+# ------------------------------------------------------------------ route text
 
 
 def test_resolve_place_strict_exact_and_unique_prefix_only():
@@ -73,7 +73,7 @@ def test_resolve_place_strict_exact_and_unique_prefix_only():
     assert resolve_place_strict("baku", "az").code == "GYD"
     assert resolve_place_strict("ist", "az").code == "IST"
     assert resolve_place_strict("Стамбул", "az").code == "IST"
-    assert resolve_place_strict("ba", "az") is None  # çox qısa və qeyri-dəqiq
+    assert resolve_place_strict("ba", "az") is None  # too short and imprecise
     assert resolve_place_strict("zzzz", "az") is None
 
 
@@ -99,7 +99,7 @@ def test_parse_route_rejects_unclear_text(text):
     assert parse_route(text, "az") is None
 
 
-# --------------------------------------------------------------------- bayraq/ölkə
+# --------------------------------------------------------------------- flag/country
 
 
 def test_flag_emoji():
@@ -149,14 +149,14 @@ async def test_travelpayouts_explore_params_and_dedup_by_destination():
 
     p = TravelpayoutsProvider(httpx.AsyncClient(transport=httpx.MockTransport(handler)), "tok")
     out = await p.explore(origin="GYD", month=date(2026, 12, 1), currency="USD", limit=10)
-    assert "destination" not in seen  # "hər yerə": təyinat verilmir
+    assert "destination" not in seen  # "anywhere": no destination is sent
     assert seen["origin"] == "GYD" and seen["departure_at"] == "2026-12" and seen["unique"] == "true"
     assert seen["one_way"] == "true" and seen["sorting"] == "price" and seen["currency"] == "usd"
     assert [(q.destination, q.price) for q in out] == [
         ("TBS", Decimal("60")),
         ("IST", Decimal("70")),
         ("DXB", Decimal("95")),
-    ]  # origin==dest süzülüb, hər istiqamətdən ən ucuzu
+    ]  # origin==dest filtered out, the cheapest per destination
 
 
 async def test_travelpayouts_explore_respects_limit_and_handles_rate_limit():
@@ -194,11 +194,11 @@ def test_quote_json_roundtrip_keeps_destination():
     )
     assert quote_from_json(quote_to_json(q)) == q
     old = quote_to_json(q)
-    old.pop("destination")  # köhnə keş qeydləri destination sahəsiz idi
+    old.pop("destination")  # old cache entries had no destination field
     assert quote_from_json(old).destination is None
 
 
-# ---------------------------------------------------------------------- ad həlli
+# ---------------------------------------------------------------------- name resolution
 
 
 def test_parse_cities_is_tolerant():
@@ -215,4 +215,4 @@ async def test_names_static_first_then_code_without_network():
     names = PlaceNames(None, None, remote=False)
     info = await names.lookup("IST", "az")
     assert (info.name, info.country) == ("İstanbul", "TR")
-    assert (await names.lookup("KUL", "az")).name == "KUL"  # naməlum: kodun özü, xəta yox
+    assert (await names.lookup("KUL", "az")).name == "KUL"  # unknown: the code itself, no error

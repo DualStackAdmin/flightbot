@@ -17,8 +17,8 @@ async def cmd_start(
     message: Message, state: FSMContext, user: User, session: AsyncSession, is_new_user: bool, tr, deps: Deps
 ) -> None:
     if is_new_user:
-        # Yeni istifadəçi dərhal "haraya?" addımına düşür: dil Telegram-dan təxmin olunub, sual yoxdur,
-        # populyar istiqamət düymələri xoş gəldin mesajının özündədir (boş səhifə yoxdur).
+        # A new user lands directly on the "where to?" step: the language is guessed from Telegram so there is no question,
+        # and the popular-destination buttons are on the welcome message itself (no blank page).
         await begin(message, state, user, session, tr, deps, "watch", text=tr("start.new"))
         return
     await state.clear()

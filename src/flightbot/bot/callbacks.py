@@ -20,8 +20,8 @@ class DirectCb(CallbackData, prefix="dr"):
 
 
 class TargetCb(CallbackData, prefix="tg"):
-    cents: int  # hədəf qiymət * 100 (onluq hissəni itirməmək üçün)
-    force: int = 0  # 1 = "artıq hədəfdən aşağıdır" xəbərdarlığı təsdiqlənib
+    cents: int  # target price * 100 (so the decimal part is not lost)
+    force: int = 0  # 1 = the "already below target" warning was confirmed
 
 
 class EditTargetCb(CallbackData, prefix="et"):
@@ -29,7 +29,7 @@ class EditTargetCb(CallbackData, prefix="et"):
 
 
 class WatchCb(CallbackData, prefix="wt"):
-    action: str  # 'pause' | 'resume' | 'del' | 'edit' | 'npause' (bildirişdən dayandır)
+    action: str  # 'pause' | 'resume' | 'del' | 'edit' | 'npause' (pause from a notification)
     id: int
 
 

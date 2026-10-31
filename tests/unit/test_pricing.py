@@ -15,8 +15,8 @@ def test_good_price_requires_enough_samples():
 
 def test_anomaly_threshold_is_60_percent_below_median():
     assert p.is_anomalous_low(D("79"), STATS)
-    assert not p.is_anomalous_low(D("80"), STATS)  # tam sərhəd: median*0.4 = 80
-    assert not p.is_anomalous_low(D("10"), THIN)  # kifayət data yoxdur
+    assert not p.is_anomalous_low(D("80"), STATS)  # exact boundary: median*0.4 = 80
+    assert not p.is_anomalous_low(D("10"), THIN)  # not enough data
 
 
 def test_vs_median_pct():

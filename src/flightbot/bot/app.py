@@ -1,4 +1,4 @@
-"""Bot prosesi: `python -m flightbot.bot`. Polling (dev) və ya webhook (prod, aiohttp)."""
+"""Bot process: `python -m flightbot.bot`. Polling (dev) or webhook (prod, aiohttp)."""
 
 import asyncio
 import contextlib
@@ -33,7 +33,7 @@ from flightbot.providers.places import PlacesProvider
 
 log = get_logger(__name__)
 COMMANDS = ("new", "explore", "list", "search", "settings", "help", "delete", "cancel")
-FSM_TTL = timedelta(days=3)  # Redis-də bütün açarlar TTL-lidir (volatile-lru təhlükəsizdir)
+FSM_TTL = timedelta(days=3)  # all Redis keys have a TTL (volatile-lru is safe)
 
 
 async def on_error(event: ErrorEvent, settings: Settings) -> bool:
@@ -63,11 +63,11 @@ def create_dispatcher(
     )
     deps = Deps(provider, places, names or PlaceNames(None, None, remote=False), settings)
     dp = Dispatcher(storage=storage, settings=settings, deps=deps)
-    # Sıra vacibdir: throttle (ucuz) -> DB sessiyası -> istifadəçi
+    # Order matters: throttle (cheap) -> DB session -> user
     dp.update.outer_middleware(ThrottlingMiddleware(redis, rate=throttle[0], burst=throttle[1]))
     dp.update.outer_middleware(DbSessionMiddleware(sessionmaker))
     dp.update.outer_middleware(UserMiddleware(settings))
-    # Sıra vacibdir: /start /help /cancel əvvəl, sonra axın, sonra qalanlar
+    # Order matters: /start /help /cancel first, then the flow, then the rest
     dp.include_routers(
         start.router,
         flow.router,
@@ -75,7 +75,7 @@ def create_dispatcher(
         settings_handlers.router,
         feedback.router,
         chat_member.router,
-        fallback.router,  # həmişə sonuncu: heç nəyə uyğun gəlməyən hər şeyi tutur
+        fallback.router,  # always last: catches everything that matched nothing else
     )
     dp.errors.register(on_error)
     return dp
@@ -95,11 +95,11 @@ async def set_commands(bot: Bot, default_language: str) -> None:
 def build_webhook_app(
     bot: Bot, dp: Dispatcher, settings: Settings, engine: AsyncEngine, redis: Redis
 ) -> web.Application:
-    """Webhook + /healthz. Telegram `X-Telegram-Bot-Api-Secret-Token` başlığı yoxlanılır:
-    yanlış/boş token 401 qaytarır (kənar şəxs saxta update göndərə bilməz)."""
+    """Webhook + /healthz. The Telegram `X-Telegram-Bot-Api-Secret-Token` header is verified:
+    a wrong/empty token returns 401 (an outsider cannot send fake updates)."""
     secret = settings.webhook_secret.get_secret_value()
     if not secret:
-        raise RuntimeError("webhook rejimi üçün WEBHOOK_SECRET təyin edilməlidir")
+        raise RuntimeError("WEBHOOK_SECRET must be set for webhook mode")
     app = web.Application()
     SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=secret).register(
         app, path=settings.webhook_path
@@ -124,7 +124,7 @@ async def run_webhook(
     bot: Bot, dp: Dispatcher, settings: Settings, engine: AsyncEngine, redis: Redis
 ) -> None:
     if not settings.webhook_base_url:
-        raise RuntimeError("webhook rejimi üçün WEBHOOK_BASE_URL təyin edilməlidir")
+        raise RuntimeError("WEBHOOK_BASE_URL must be set for webhook mode")
     app = build_webhook_app(bot, dp, settings, engine, redis)
     await bot.set_webhook(
         url=settings.webhook_base_url.rstrip("/") + settings.webhook_path,
@@ -150,7 +150,7 @@ async def amain() -> None:
     setup_logging(settings.log_level, settings.log_json)
     token = settings.bot_token.get_secret_value()
     if not token:
-        raise SystemExit("BOT_TOKEN təyin edilməyib (.env faylına baxın)")
+        raise SystemExit("BOT_TOKEN is not set (see the .env file)")
     if settings.sentry_dsn:
         import sentry_sdk
 

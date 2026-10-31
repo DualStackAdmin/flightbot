@@ -1,5 +1,7 @@
-"""Bot axınının tam sınağı: Dispatcher + bütün middleware-lər + real Postgres/Redis (FSM).
-Yalnız Telegram şəbəkəsi mock-dur: aiogram sessiyası bütün çıxış sorğularını tutur."""
+"""Full test of the bot flow: Dispatcher + all middlewares + real Postgres/Redis (FSM).
+Only the Telegram network is mocked: the aiogram session captures all outgoing requests.
+
+Note: the UI is exercised in Azerbaijani (the primary language), so the assertions intentionally contain Azerbaijani bot messages."""
 
 import time
 from datetime import UTC, datetime, timedelta
@@ -49,7 +51,7 @@ def quote(
 
 
 async def create_watch(chat: Chat, dest: str = "İstanbul", month_idx: int = 1, target: str = "150") -> None:
-    """Standart 3 toxunuş: haraya -> ay -> hədəf."""
+    """Standard 3 touches: destination -> month -> target."""
     await chat.say("/new")
     await chat.press(dest)
     await chat.press(month_label(month_idx))
@@ -70,7 +72,9 @@ async def test_new_user_lands_directly_on_destination_picker_without_language_qu
     chat = env.chat(10, lang="en")
     await chat.say("/start")
     text_ = chat.last_text()
-    assert "Where do you want to fly" in text_ and "partner links" in text_  # dil Telegram-dan təxmin olundu
+    assert (
+        "Where do you want to fly" in text_ and "partner links" in text_
+    )  # the language was guessed from Telegram
     labels = chat.button_labels()
     assert any("Istanbul" in x for x in labels) and any("Dubai" in x for x in labels)
     assert any("Anywhere" in x for x in labels) and any("Baku" in x and "change" in x for x in labels)
@@ -93,14 +97,14 @@ async def test_returning_user_gets_menu(env):
 
 
 async def test_quick_start_button_on_welcome_message_works(env, sm):
-    """Boş səhifə yoxdur: xoş gəldin mesajındakı populyar düymə birbaşa ay seçiminə aparır."""
+    """No blank page: the popular button on the welcome message leads straight to month selection."""
     chat = env.chat(11)
     await chat.say("/start")
     await chat.press("İstanbul")
     assert "Bakı → İstanbul" in chat.last_text() and "Hansı ay" in chat.last_text()
 
 
-# ======================================================== standart izləmə: 3 toxunuş
+# ======================================================== default watch: 3 touches
 async def test_default_watch_takes_three_touches_after_new(env, sm):
     chat = env.chat()
     await chat.say("/new")
@@ -142,12 +146,12 @@ async def test_waiting_message_is_shown_then_replaced_in_place(env):
     seen = chat.texts()
     assert any("Qiymətlərə baxıram" in t for t in seen) and "Hazırda ən ucuz" in seen[-1]
     edits = [m for m, _ in chat.outgoing(True) if m.__class__.__name__ == "EditMessageText"]
-    assert len(edits) >= 2  # eyni mesaj redaktə olunur, söhbət uzanmır
+    assert len(edits) >= 2  # the same message is edited, the chat doesn't grow
 
 
 async def test_typing_price_above_current_asks_for_confirmation(env, sm):
     chat = env.chat()
-    await create_watch(chat, target="250")  # hazırkı qiymət 200 < 250
+    await create_watch(chat, target="250")  # current price 200 < 250
     assert "artıq bu hədəfdən aşağıdır" in chat.last_text()
     assert await scalar(sm, "select count(*) from watches") == 0
     await chat.press("Bəli, davam")
@@ -171,8 +175,8 @@ async def test_no_current_price_still_allows_watch_without_quick_buttons(env, sm
     await chat.press("İstanbul")
     await chat.press(month_label(1))
     assert "qiymət tapılmadı" in chat.last_text()
-    assert not any("%" in x for x in chat.button_labels())  # sürətli hədəf düymələri yoxdur
-    await chat.say("100")  # cari qiymət yoxdur: xəbərdarlıq da yoxdur
+    assert not any("%" in x for x in chat.button_labels())  # no quick-target buttons
+    await chat.say("100")  # no current price: no warning either
     assert "İzləmə yaradıldı" in chat.last_text()
 
 
@@ -206,7 +210,7 @@ async def test_free_plan_allows_three_month_watches_and_blocks_fourth(env, sm):
     assert "limitinə çatdınız (3)" in chat.last_text()
 
 
-# =================================================================== dəqiq tarix və ətraflı
+# =================================================================== exact date and details
 async def test_exact_date_flow(env, sm):
     chat = env.chat()
     await chat.say("/new")
@@ -233,9 +237,11 @@ async def test_advanced_options_round_trip_and_direct(env, sm):
     await chat.press(month_label(2))
     await chat.press("Gediş-gəliş")
     labels = chat.button_labels()
-    assert month_label(1) not in labels and month_label(2) in labels  # qayıdış gedişdən əvvəl ola bilməz
+    assert (
+        month_label(1) not in labels and month_label(2) in labels
+    )  # the return can't be before the departure
     await chat.press(month_label(3))
-    await chat.press("Bəli")  # birbaşa
+    await chat.press("Bəli")  # direct
     await chat.press("⭐")
     r = (await watch_rows(sm))[0]
     assert r.date_mode == "month" and r.return_date == months()[3] and r.direct_only is True
@@ -258,7 +264,7 @@ async def test_exact_round_trip_return_before_departure_rejected(env, sm):
     assert (await watch_rows(sm))[0].return_date is not None
 
 
-# ====================================================================== geri və ləğv
+# ====================================================================== back and cancel
 async def test_back_button_returns_to_previous_step_and_edits_in_place(env):
     chat = env.chat()
     await chat.say("/new")
@@ -266,7 +272,7 @@ async def test_back_button_returns_to_previous_step_and_edits_in_place(env):
     assert "Hansı ay" in chat.last_text()
     await chat.press("Geri")
     assert "Haraya uçmaq istəyirsiniz" in chat.last_text()
-    assert not any("Geri" in x for x in chat.button_labels())  # ilk addımda "Geri" yoxdur
+    assert not any("Geri" in x for x in chat.button_labels())  # no "Back" on the first step
     assert any("Ləğv" in x for x in chat.button_labels())
 
 
@@ -299,16 +305,16 @@ async def test_commands_work_in_the_middle_of_a_flow(env):
     assert "Ləğv edildi" in chat.last_text()
     await chat.say("/new")
     await chat.press("İstanbul")
-    await chat.say("/new")  # yarımçıq axını yenidən başlayır
+    await chat.say("/new")  # restarts the half-finished flow
     assert "Haraya uçmaq istəyirsiniz" in chat.last_text()
 
 
 async def test_text_typed_instead_of_pressing_a_button_rerenders_step(env):
     chat = env.chat()
     await chat.say("/new")
-    await chat.press("İstanbul")  # ay addımı (düymələr gözlənilir)
+    await chat.press("İstanbul")  # month step (buttons are expected)
     await chat.say("noyabr")
-    assert "Hansı ay" in chat.last_text()  # cavabsız qalmır
+    assert "Hansı ay" in chat.last_text()  # it doesn't stay unanswered
 
 
 # =========================================================================== origin
@@ -319,7 +325,7 @@ async def test_change_origin_then_complete_flow(env, sm):
     assert "Haradan uçursunuz" in chat.last_text()
     await chat.say("ankara")
     await chat.press("Ankara")
-    assert "Haradan: <b>Ankara</b>" in chat.last_text()  # dest addımına qayıtdı
+    assert "Haradan: <b>Ankara</b>" in chat.last_text()  # returned to the destination step
     assert any("Bakı" in x for x in chat.button_labels()) is False
     await chat.press("İstanbul")
     await chat.press(month_label(1))
@@ -340,16 +346,16 @@ async def test_origin_picker_offers_home_city_button(env):
 async def test_destination_equal_to_origin_is_refused(env):
     chat = env.chat()
     await chat.say("/new")
-    await chat.say("baki")  # origin Bakıdır; populyar siyahıda yoxdur, amma mətnlə seçilə bilər
+    await chat.say("baki")  # origin is Baku; it's not in the popular list, but can be chosen by text
     await chat.press("Bakı")
     assert any("eyni ola bilməz" in (a or "") for a in chat.alerts())
-    # imtinadan sonra axın davam edir: başqa təyinat seçmək işləyir
+    # after the refusal the flow continues: choosing another destination works
     await chat.say("istanbul")
     await chat.press("İstanbul")
     assert "Bakı → İstanbul" in chat.last_text() and "Hansı ay" in chat.last_text()
 
 
-# ===================================================== fallback: bot heç vaxt susmur
+# ===================================================== fallback: the bot never goes silent
 async def test_free_text_city_goes_straight_to_month_step(env):
     chat = env.chat()
     await chat.say("İstanbul")
@@ -389,7 +395,7 @@ async def test_stale_button_gets_an_alert_instead_of_spinning(env):
     chat = env.chat()
     await chat.say("/start")
     await chat.say("/cancel")
-    await chat.click(MonthCb(which="dep", ym="2030-01").pack())  # state yoxdur
+    await chat.click(MonthCb(which="dep", ym="2030-01").pack())  # no state
     assert any("vaxtı keçib" in (a or "") for a in chat.alerts())
 
 
@@ -415,7 +421,7 @@ async def test_explore_lists_cheapest_destinations_and_leads_to_a_watch(env, sm)
     await chat.press(month_label(1))
     labels = chat.button_labels()
     assert any("İstanbul" in x and "79 USD" in x for x in labels)
-    assert any("KUL" in x and "310 USD" in x for x in labels)  # naməlum kod: kodun özü
+    assert any("KUL" in x and "310 USD" in x for x in labels)  # unknown code: the code itself
     assert any("🇹🇷" in x for x in labels) and any("🇦🇪" in x for x in labels)
     assert env.provider.explore_calls == 1 and env.provider.calls == 0
 
@@ -423,11 +429,11 @@ async def test_explore_lists_cheapest_destinations_and_leads_to_a_watch(env, sm)
     detail = chat.last_text()
     assert "Ən ucuz: <b>79 USD</b>" in detail and "Bakı → İstanbul" in detail
     url = chat.url_of("Bilet tap")
-    assert "marker=794979." in url and "t=abc" in url  # affiliate marker və sub_id
+    assert "marker=794979." in url and "t=abc" in url  # affiliate marker and sub_id
 
     await chat.press("xəbər ver")
     assert "Hazırda ən ucuz: <b>79 USD</b>" in chat.last_text()
-    assert env.provider.calls == 0  # explore qiyməti istifadə olunur, ikinci provayder sorğusu yoxdur
+    assert env.provider.calls == 0  # the explore price is used, no second provider request
     await chat.press("⭐")
     r = (await watch_rows(sm))[0]
     assert (r.destination, r.date_mode, r.depart_date, r.return_date) == ("IST", "month", months()[1], None)
@@ -487,9 +493,9 @@ async def test_search_shows_cheapest_days_then_can_start_watch(env, sm):
     env.make(provider=FakeProvider())
     chat = env.chat()
     await chat.say("/search")
-    assert not any("Hər yerə" in x for x in chat.button_labels())  # /search-də explore düyməsi yoxdur
+    assert not any("Hər yerə" in x for x in chat.button_labels())  # no explore button in /search
     await chat.press("Dubay")
-    assert not any("Dəqiq tarix" in x for x in chat.button_labels())  # yalnız ay seçimi
+    assert not any("Dəqiq tarix" in x for x in chat.button_labels())  # month selection only
     await chat.press(month_label(1))
     result = chat.last_text()
     assert "ən ucuz günlər" in result and result.count("•") == 5 and "Bakı → Dubay" in result
@@ -588,7 +594,7 @@ async def test_menu_buttons_start_flows(env):
     assert "Hələ izləməniz yoxdur" in chat.last_text()
 
 
-# ============================================================ bildirişdən idarəetmə
+# ============================================================ management from a notification
 async def test_notification_pause_button_pauses_and_removes_management_row(env, sm):
     chat = env.chat(21)
     await create_watch(chat)
@@ -625,7 +631,7 @@ async def test_notification_edit_target_button_opens_edit_flow_as_new_message(en
 async def test_settings_language_currency_and_quiet_hours(env, sm):
     chat = env.chat()
     await chat.say("/settings")
-    assert "Sakit saatlar (00:00–00:00): açıq" in chat.last_text()  # test konfiqurasiyasında söndürülüb
+    assert "Sakit saatlar (00:00–00:00): açıq" in chat.last_text()  # disabled in the test configuration
     await chat.press("English")
     assert "Settings" in chat.last_text() and await scalar(sm, "select language from users") == "en"
     await chat.press("AZN")
@@ -659,7 +665,7 @@ async def test_set_home_city_changes_default_origin(env, sm):
     assert "Haradan: <b>Ankara</b>" in chat.last_text()
 
 
-# ===================================================== bloklama / bloku açma / feedback
+# ===================================================== blocking / unblocking / feedback
 def member_update(tg_id: int, status: str) -> dict:
     user = {"id": tg_id, "is_bot": False, "first_name": "T"}
     bot_user = {"id": 42, "is_bot": True, "first_name": "bot", "username": "b"}
@@ -712,7 +718,7 @@ async def test_feedback_is_stored_only_owner_can_vote_and_only_feedback_row_remo
     await chat.click(FbCb(id=900, vote=1).pack(), reply_markup=markup)
     assert await scalar(sm, "select feedback from notifications") == 1
     edits = [m for m, _ in chat.session.log if isinstance(m, EditMessageReplyMarkup)]
-    assert edits and len(edits[-1].reply_markup.inline_keyboard) == 2  # buy + manage qalır
+    assert edits and len(edits[-1].reply_markup.inline_keyboard) == 2  # buy + manage remain
 
 
 # =========================================================================== throttle

@@ -34,7 +34,7 @@ def _pairs(buttons: Row) -> list[Row]:
     return [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
 
 
-# ------------------------------------------------------------------ axın addımları
+# ------------------------------------------------------------------ flow steps
 def dest_kb(origin: str, lang: str, *, explore: bool) -> InlineKeyboardMarkup:
     codes = [c for c in POPULAR if c != origin][:POPULAR_SHOWN]
     popular = [
@@ -137,7 +137,7 @@ def nav_only_kb(lang: str, *, back: bool = True) -> InlineKeyboardMarkup:
 
 def _target_buttons(current: Decimal, lang: str, data_cls) -> list[Row]:
     rows: list[Row] = []
-    quick = quick_targets(current)  # birincisi tövsiyə olunandır
+    quick = quick_targets(current)  # the first one is the recommended target
     for idx, (pct, value) in enumerate(quick):
         key = "btn.target_rec" if idx == 0 else "btn.target_pct"
         label = t(lang, key, pct=pct, price=fmt_price(value))
@@ -196,7 +196,7 @@ def menu_kb(lang: str) -> InlineKeyboardMarkup:
     )
 
 
-# ------------------------------------------------------------- explore / search nəticələri
+# ------------------------------------------------------------- explore / search results
 def explore_list_kb(items: list[dict], lang: str) -> InlineKeyboardMarkup:
     rows: list[Row] = []
     for i, it in enumerate(items):
@@ -220,7 +220,7 @@ def search_result_kb(lang: str) -> InlineKeyboardMarkup:
     return _kb([[_btn(t(lang, "btn.watch_this"), cb.GoCb(to="watch"))], nav_row(lang)])
 
 
-# ------------------------------------------------------------------------------ siyahı
+# ------------------------------------------------------------------------------ list
 def watch_item_kb(watch_id: int, status: str, lang: str) -> InlineKeyboardMarkup:
     toggle = (
         _btn(t(lang, "btn.resume"), cb.WatchCb(action="resume", id=watch_id))

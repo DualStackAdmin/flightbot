@@ -1,5 +1,5 @@
-"""İzləmələrin yaradılması/idarəsi. Kvota yoxlaması istifadəçi sətri üzərində FOR UPDATE ilə
-atomikdir: eyni istifadəçi paralel 10 sorğu göndərsə belə limit aşılmır."""
+"""Creating/managing watches. The quota check is atomic via FOR UPDATE on the user row:
+even 10 parallel requests from the same user cannot exceed the limit."""
 
 from datetime import datetime
 from decimal import Decimal
@@ -103,7 +103,7 @@ async def create_or_update_watch(
     target_price: Decimal,
     now: datetime,
 ) -> tuple[Watch, bool]:
-    """(watch, created). Mövcud (user, key) üçün hədəfi yeniləyir və yenidən silahlandırır."""
+    """(watch, created). For an existing (user, key) it updates the target and re-arms."""
     limits = await _lock_user_limits(session, user_id, now)
     key_id = await get_or_create_key_id(session, key)
 
@@ -128,7 +128,7 @@ async def create_or_update_watch(
         created = True
     await session.flush()
 
-    # Açar artıq yoxlanıbsa və qiymət hədəfdən aşağıdırsa, növbəti dövrü gözləmədən yoxla.
+    # If the key was already checked and the price is below the target, check it now instead of waiting for the next cycle.
     await session.execute(
         text(
             "UPDATE watch_keys SET next_check_at = LEAST(next_check_at, now()) "
@@ -165,7 +165,7 @@ async def get_watch_with_key(
 async def set_paused(
     session: AsyncSession, *, user_id: int, watch_id: int, paused: bool, now: datetime
 ) -> bool:
-    """Dayandır/davam et. Davam edərkən kvota yenidən yoxlanılır. Tapılmasa False."""
+    """Pause/resume. The quota is re-checked on resume. False if not found."""
     limits = await _lock_user_limits(session, user_id, now)
     row = (
         await session.execute(
@@ -209,7 +209,7 @@ async def record_feedback(session: AsyncSession, *, notification_id: int, user_i
 
 
 async def update_target(session: AsyncSession, *, user_id: int, watch_id: int, target_price: Decimal) -> bool:
-    """Hədəfi dəyişir, izləməni yenidən silahlandırır. Qiymət artıq hədəfdən aşağıdırsa dərhal yoxlanır."""
+    """Change the target and re-arm the watch. Checked immediately if the price is already below the target."""
     res = await session.execute(
         text(
             "UPDATE watches SET target_price = :t, armed = true, last_notified_price = NULL, "

@@ -1,5 +1,5 @@
-"""Bildiriş mətninin və düymələrin renderi. Payload dildən asılı deyil; dil göndərmə anında tətbiq olunur
-(istifadəçi arada dilini dəyişsə, doğru dildə alır)."""
+"""Rendering of the notification text and buttons. The payload is language-independent; the language is applied
+at send time (if the user changes language in between, they get the right one)."""
 
 from datetime import date
 from decimal import Decimal

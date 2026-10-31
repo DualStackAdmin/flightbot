@@ -1,7 +1,7 @@
-"""Poller: vaxtı çatmış watch_key-ləri götürür (SKIP LOCKED lease), provayderə 1 sorğu göndərir,
-bütün abunəçilər üçün alert qərarını verir və bildirişləri OUTBOX-a yazır (eyni transaksiyada).
+"""Poller: takes due watch_keys (SKIP LOCKED lease), sends 1 request to the provider,
+makes the alert decision for all subscribers and writes notifications to the OUTBOX (in the same transaction).
 
-Heç vaxt birbaşa Telegram-a yazmır. Çatdırılma broadcaster-in işidir.
+It never writes to Telegram directly. Delivery is the broadcaster's job.
 """
 
 import asyncio
@@ -142,7 +142,7 @@ class Poller:
         self._clock = clock
         self._sem = asyncio.Semaphore(settings.poller_concurrency)
 
-    # ------------------------------------------------------------------ döngü
+    # ------------------------------------------------------------------ loop
     async def run_once(self) -> int:
         async with self._sm.begin() as s:
             claimed = await claim_due_keys(
@@ -153,7 +153,7 @@ class Poller:
         return len(claimed)
 
     async def refresh_metrics(self) -> None:
-        """Vaxtı çatmış (geridə qalmış) açar sayı: poller ayaq tutmursa bu rəqəm artır."""
+        """Number of due (backlogged) keys: grows if the poller can't keep up."""
         async with self._sm() as s:
             due = await s.execute(
                 text(
@@ -190,7 +190,7 @@ class Poller:
             await self._release(c.id, delay=timedelta(seconds=max(exc.retry_after, 30)), failure=False)
             metrics.POLLED_KEYS.labels("rate_limited").inc()
         except RedisError as exc:
-            # Rate limiter/keş (Redis) əlçatmazdır: açarın günahı deyil, uğursuzluq sayğacını şişirmə
+            # The rate limiter/cache (Redis) is unavailable: not the key's fault, don't inflate the failure counter
             await self._release(c.id, delay=timedelta(seconds=60), failure=False)
             log.error("poll_redis_error", key_id=c.id, error=repr(exc))
             metrics.POLLED_KEYS.labels("redis_error").inc()
@@ -214,7 +214,7 @@ class Poller:
 
         confirmed = False
         if quote is not None and is_anomalous_low(quote.price, stats):
-            # Şübhəli dərəcədə ucuz: keşi keçib ikinci müstəqil sorğu ilə təsdiqlə
+            # Suspiciously cheap: bypass the cache and confirm with a second independent request
             second = await cheapest(self._provider, c.key, fresh=True)
             if second is not None:
                 quote = second
@@ -245,7 +245,7 @@ class Poller:
         await self._evaluate_watchers(s, c, quote, stats, confirmed, previous_price, now)
         await self._finish_key(s, c, now, price=None if unconfirmed_anomaly else quote.price)
 
-    # ------------------------------------------------------------ tarixçə
+    # ------------------------------------------------------------ history
     async def _last_point_price(self, s: AsyncSession, key_id: int) -> Decimal | None:
         row = (
             await s.execute(
@@ -272,7 +272,7 @@ class Poller:
             and last.depart_date == q.depart_date
             and now - last.observed_at < POINT_DEDUP_WINDOW
         ):
-            return  # dəyişməyib: tarixçəni şişirtmə
+            return  # unchanged: don't bloat the history
         s.add(
             PricePoint(
                 watch_key_id=key_id,
@@ -289,7 +289,7 @@ class Poller:
             )
         )
 
-    # ---------------------------------------------------------- abunəçilər
+    # ---------------------------------------------------------- subscribers
     async def _evaluate_watchers(
         self,
         s: AsyncSession,
@@ -308,7 +308,7 @@ class Poller:
                     Watch.watch_key_id == c.id,
                     Watch.status == "active",
                     User.is_blocked.is_(False),
-                    # yalnız hədəfi ödəyənlər və re-arm gözləyənlər
+                    # only those whose target is met, and those waiting to be re-armed
                     or_(Watch.target_price >= quote.price, Watch.armed.is_(False)),
                 )
                 .with_for_update(of=Watch, skip_locked=True)
@@ -318,10 +318,10 @@ class Poller:
             return
 
         user_ids = {w.user_id for w, _, _, _ in rows}
-        # Gündəlik limit race-i: eyni istifadəçinin FƏRQLİ açarları paralel yoxlananda hər tranzaksiya
-        # sayğacı ayrıca görür və limit aşılır. İstifadəçi sətirlərini ID sırası ilə (deadlock yoxdur)
-        # kilidləyirik: ikinci tranzaksiya birincinin commit-ini gözləyir və artıq yazılmış bildirişləri görür.
-        # key_share=True -> FOR NO KEY UPDATE: bildiriş INSERT-lərinin FK yoxlamasını bloklamır.
+        # Daily-limit race: when DIFFERENT keys of the same user are polled in parallel, each transaction sees the
+        # counter separately and the limit is exceeded. We lock the user rows in ID order (no deadlocks):
+        # the second transaction waits for the first one's commit and sees the notifications already written.
+        # key_share=True -> FOR NO KEY UPDATE: does not block the FK checks of notification INSERTs.
         await s.execute(
             select(User.id).where(User.id.in_(user_ids)).order_by(User.id).with_for_update(key_share=True)
         )
@@ -354,7 +354,7 @@ class Poller:
                 continue
 
             dedup_key = f"w{watch.id}:{quote.price}:{now:%Y%m%d}"
-            # Sakit saatlarda bildiriş outbox-a yazılır, amma səhərə qədər göndərilmir
+            # In quiet hours the notification is written to the outbox but not sent until morning
             available_at = (
                 deliver_after(
                     now,
@@ -384,7 +384,7 @@ class Poller:
                 )
                 .on_conflict_do_nothing(constraint="uq_notifications_dedup_key")
             )
-            if result.rowcount:  # dublikat deyilsə state-i yenilə
+            if result.rowcount:  # if it's not a duplicate, update the state
                 watch.armed = False
                 watch.last_notified_price = quote.price
                 watch.last_notified_at = now
@@ -402,7 +402,7 @@ class Poller:
         )
         return {uid: int(n) for uid, n in rows.all()}
 
-    # ------------------------------------------------------ açarın bağlanması
+    # ------------------------------------------------------ closing the key
     async def _has_pro_watcher(self, s: AsyncSession, key_id: int, now: datetime) -> bool:
         row = await s.execute(
             text(

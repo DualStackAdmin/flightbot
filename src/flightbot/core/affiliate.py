@@ -1,8 +1,8 @@
-"""Satın alma linki (affiliate).
+"""Booking link (affiliate).
 
-DİQQƏT: Travelpayouts-un `marker` və `sub_id` formatını real hesabda yoxlayın.
-Burada `marker=<MARKER>.<SUB_ID>` forması istifadə olunur (sub_id izləmə üçün).
-Kliklərin öz domeninizdə izlənməsi (redirect servisi) sonrakı mərhələdir.
+NOTE: verify Travelpayouts' `marker` and `sub_id` format with a real account.
+This uses `marker=<MARKER>.<SUB_ID>` (the sub_id is for tracking).
+Tracking clicks on your own domain (a redirect service) is a later milestone.
 """
 
 from datetime import date
@@ -14,7 +14,7 @@ AVIASALES_BASE = "https://www.aviasales.com"
 def fallback_search_path(
     origin: str, destination: str, depart: date, return_date: date | None, passengers: int = 1
 ) -> str:
-    """Aviasales axtarış qısa formatı: GYD1507IST1 (tək), GYD1507IST25071 (gediş-gəliş)."""
+    """Short Aviasales search format: GYD1507IST1 (one-way), GYD1507IST25071 (round trip)."""
     out = f"{origin}{depart:%d%m}{destination}"
     back = f"{return_date:%d%m}" if return_date else ""
     return f"/search/{out}{back}{passengers}"

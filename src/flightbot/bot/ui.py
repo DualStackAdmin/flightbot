@@ -1,4 +1,4 @@
-"""Mesajı göstərmə köməkçiləri: callback-dən gələndə eyni mesajı redaktə edirik (söhbət uzanmır)."""
+"""Message display helpers: when triggered by a callback we edit the same message (the chat doesn't grow)."""
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
@@ -11,13 +11,13 @@ async def edit_or_send(msg: Message, text: str, markup: InlineKeyboardMarkup | N
     except TelegramBadRequest as exc:
         if "not modified" in str(exc).lower():
             return msg
-        return await msg.answer(text, reply_markup=markup)  # redaktə mümkün deyil: yenisini göndər
+        return await msg.answer(text, reply_markup=markup)  # editing is not possible: send a new message
 
 
 async def show(
     target: Message | CallbackQuery, text: str, markup: InlineKeyboardMarkup | None = None
 ) -> Message | None:
-    """CallbackQuery -> mövcud mesajı redaktə et; Message (mətn girişi/əmr) -> yeni mesaj."""
+    """CallbackQuery -> edit the existing message; Message (text input/command) -> a new message."""
     if isinstance(target, CallbackQuery):
         if isinstance(target.message, Message):
             return await edit_or_send(target.message, text, markup)

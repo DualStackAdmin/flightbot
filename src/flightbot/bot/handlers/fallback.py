@@ -1,4 +1,4 @@
-"""Heç vaxt cavabsız qoyma: axından kənar mətn, naməlum əmr, köhnəlmiş düymə, mətn olmayan mesaj."""
+"""Never leave the user without a reply: off-flow text, unknown commands, stale buttons, non-text messages."""
 
 from aiogram import F, Router
 from aiogram.filters import StateFilter
@@ -19,7 +19,7 @@ router = Router(name="fallback")
 async def free_text(
     message: Message, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
 ) -> None:
-    """ "İstanbul" və ya "Bakı Dubay" kimi yazı: marşrutu tanıyıb birbaşa ay seçiminə keçir."""
+    """Text like "Istanbul" or "Baku Dubai": recognise the route and jump straight to month selection."""
     parsed = parse_route(message.text or "", user.language)
     if parsed:
         origin, dest = parsed
@@ -34,7 +34,7 @@ async def free_text(
 
 @router.message()
 async def anything_else(message: Message, user: User, tr) -> None:
-    """Naməlum əmr, stiker, şəkil və s.: səssiz qalma, menyunu göstər."""
+    """Unknown command, sticker, photo, etc.: never stay silent, show the menu."""
     await message.answer(tr("fallback.unknown"), reply_markup=kb.menu_kb(user.language))
 
 

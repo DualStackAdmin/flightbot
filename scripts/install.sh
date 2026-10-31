@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# FlightBot: Linux serverdə quraşdırma (repo klonlandıqdan sonra bir əmr).
+# FlightBot: install on a Linux server (one command after cloning the repo).
 #
-#   git clone git@github.com:<siz>/flightbot.git /opt/flightbot && cd /opt/flightbot
+#   git clone git@github.com:<you>/flightbot.git /opt/flightbot && cd /opt/flightbot
 #   ./scripts/install.sh
 #
-# Qeyri-interaktiv (CI/avtomatlaşdırma):  BOT_TOKEN=... [TRAVELPAYOUTS_TOKEN=...] ./scripts/install.sh
-# Yalnız .env yaratmaq (Docker-siz sınaq): INSTALL_DRY_RUN=1 BOT_TOKEN=123:abc ./scripts/install.sh
+# Non-interactive (CI/automation):  BOT_TOKEN=... [TRAVELPAYOUTS_TOKEN=...] ./scripts/install.sh
+# Only create .env (test without Docker): INSTALL_DRY_RUN=1 BOT_TOKEN=123:abc ./scripts/install.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -21,7 +21,7 @@ rand_hex() {
   fi
 }
 
-set_env() {  # set_env KEY VALUE: .env-də KEY= sətrini əvəz edir (yoxdursa əlavə edir)
+set_env() {  # set_env KEY VALUE: replaces the KEY= line in .env (appends it if missing)
   local key="$1" value="$2"
   if grep -q "^${key}=" .env; then
     sed -i "s|^${key}=.*|${key}=${value}|" .env
@@ -32,41 +32,41 @@ set_env() {  # set_env KEY VALUE: .env-də KEY= sətrini əvəz edir (yoxdursa �
 
 get_env() { grep -E "^$1=" .env | head -n1 | cut -d= -f2- | sed 's/[[:space:]]*#.*$//'; }
 
-ask() {  # ask "sual" DEĞİŞKƏN_ADI  (tty yoxdursa boş qaytarır)
+ask() {  # ask "question": prints nothing and returns an empty answer when there is no tty
   local prompt="$1" answer=""
   if [ -t 0 ]; then read -r -p "$prompt " answer || true; fi
   printf '%s' "$answer"
 }
 
-dc() {  # docker compose (istifadəçi docker qrupunda deyilsə sudo ilə)
+dc() {  # docker compose (via sudo if the user is not in the docker group)
   if docker info >/dev/null 2>&1; then docker compose "$@"; else sudo docker compose "$@"; fi
 }
 
 ensure_docker() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then return 0; fi
-  if [ "$DRY_RUN" = 1 ]; then warn "docker/compose tapılmadı (dry-run: keçilir)"; return 0; fi
-  command -v curl >/dev/null 2>&1 || die "curl lazımdır (apt install curl)"
-  say "Docker tapılmadı, rəsmi skriptlə quraşdırılır (get.docker.com)..."
+  if [ "$DRY_RUN" = 1 ]; then warn "docker/compose not found (dry-run: skipping)"; return 0; fi
+  command -v curl >/dev/null 2>&1 || die "curl is required (apt install curl)"
+  say "Docker not found, installing it with the official script (get.docker.com)..."
   curl -fsSL https://get.docker.com | sh
   if [ "$(id -u)" -ne 0 ]; then
     sudo usermod -aG docker "$USER" || true
-    warn "İstifadəçi 'docker' qrupuna əlavə olundu. Növbəti girişdən sonra sudo-suz işləyəcək."
+    warn "The user was added to the 'docker' group. It works without sudo after your next login."
   fi
   docker compose version >/dev/null 2>&1 || sudo docker compose version >/dev/null 2>&1 \
-    || die "docker compose plugin tapılmadı"
+    || die "docker compose plugin not found"
 }
 
 # ---------------------------------------------------------------- .env
 if [ -f .env ]; then
-  say ".env artıq var, toxunulmur (yeniləmək üçün onu silin və ya əl ilə redaktə edin)"
+  say ".env already exists, leaving it untouched (delete it or edit it by hand to change it)"
 else
-  say ".env yaradılır"
+  say "Creating .env"
   cp .env.example .env
   chmod 600 .env
 
   token="${BOT_TOKEN:-}"
-  [ -n "$token" ] || token="$(ask 'Telegram BOT_TOKEN (@BotFather):')"
-  [ -n "$token" ] || die "BOT_TOKEN lazımdır (BOT_TOKEN=... ./scripts/install.sh)"
+  [ -n "$token" ] || token="$(ask 'Telegram BOT_TOKEN (from @BotFather):')"
+  [ -n "$token" ] || die "BOT_TOKEN is required (BOT_TOKEN=... ./scripts/install.sh)"
   set_env BOT_TOKEN "$token"
 
   set_env POSTGRES_PASSWORD "$(rand_hex)"
@@ -74,29 +74,29 @@ else
   set_env ENV prod
 
   tp="${TRAVELPAYOUTS_TOKEN:-}"
-  if [ -z "$tp" ]; then tp="$(ask 'Travelpayouts API token (boş buraxsanız DEMO rejimi: saxta qiymətlər):')"; fi
+  if [ -z "$tp" ]; then tp="$(ask 'Travelpayouts API token (leave empty for DEMO mode: fake prices):')"; fi
   if [ -n "$tp" ]; then
     set_env PROVIDER travelpayouts
     set_env TRAVELPAYOUTS_TOKEN "$tp"
   else
     set_env PROVIDER fake
-    warn "DEMO rejimi (PROVIDER=fake): qiymətlər saxtadır. Real data üçün .env-də TRAVELPAYOUTS_TOKEN təyin edib 'docker compose up -d' edin."
+    warn "DEMO mode (PROVIDER=fake): prices are fake. For real data set TRAVELPAYOUTS_TOKEN in .env and run 'docker compose up -d'."
   fi
 fi
 
-[ -n "$(get_env BOT_TOKEN)" ] || die ".env-də BOT_TOKEN boşdur"
+[ -n "$(get_env BOT_TOKEN)" ] || die "BOT_TOKEN is empty in .env"
 
 if [ "$DRY_RUN" = 1 ]; then
-  say "DRY-RUN: .env hazırdır, Docker addımları keçildi."
+  say "DRY-RUN: .env is ready, Docker steps skipped."
   exit 0
 fi
 
 # ---------------------------------------------------------------- docker
 ensure_docker
-say "Konteynerlər qurulur və işə salınır (ilk dəfə bir neçə dəqiqə çəkə bilər)..."
+say "Building and starting containers (the first run can take a few minutes)..."
 dc up -d --build
 
-say "Sağlamlıq yoxlanılır..."
+say "Checking health..."
 for _ in $(seq 1 60); do
   if dc ps --format '{{.Service}} {{.Status}}' | grep -E '^(bot|worker) ' | grep -q 'healthy'; then
     ok=1; break
@@ -104,14 +104,14 @@ for _ in $(seq 1 60); do
   sleep 3
 done
 dc ps
-if [ "${ok:-0}" = 1 ]; then say "Hazırdır. Botunuza Telegram-da /start yazın."
-else warn "Konteynerlər hələ 'healthy' olmayıb. Loglara baxın: docker compose logs -f bot worker"; fi
+if [ "${ok:-0}" = 1 ]; then say "Ready. Send /start to your bot in Telegram."
+else warn "Containers are not 'healthy' yet. Check the logs: docker compose logs -f bot worker"; fi
 
 cat <<'MSG'
 
-Faydalı əmrlər:
-  docker compose logs -f bot worker     # loglar
-  ./scripts/update.sh                   # GitHub-dan yeniləmə
+Useful commands:
+  docker compose logs -f bot worker     # logs
+  ./scripts/update.sh                   # update from GitHub
   docker compose exec worker python -m flightbot.cli stats
   docker compose exec worker python -m flightbot.cli grant-pro <telegram_id> --days 30
 MSG

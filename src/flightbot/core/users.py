@@ -12,7 +12,7 @@ LAST_SEEN_THROTTLE = timedelta(minutes=10)
 
 
 def pick_language(hint: str | None, default: str) -> str:
-    """Telegram language_code -> dəstəklənən dil. Dəstəklənməyən = default (az)."""
+    """Telegram language_code -> a supported language. Unsupported = default (az)."""
     if hint:
         code = hint.split("-")[0].lower()
         if code in SUPPORTED_LANGUAGES:
@@ -30,7 +30,7 @@ async def get_or_create_user(
     default_home_iata: str | None,
     now: datetime,
 ) -> tuple[User, bool]:
-    """Race-safe: INSERT ... ON CONFLICT DO NOTHING + SELECT. (user, created) qaytarır."""
+    """Race-safe: INSERT ... ON CONFLICT DO NOTHING + SELECT. Returns (user, created)."""
     stmt = (
         pg_insert(User)
         .values(
@@ -66,9 +66,9 @@ async def set_currency(session: AsyncSession, user_id: int, currency: str) -> No
 
 
 async def mark_blocked(session: AsyncSession, user_id: int) -> None:
-    """İstifadəçi botu bloklayıb: abunəlikləri dondur, gözləyən bildirişləri ləğv et.
+    """The user blocked the bot: freeze their watches and cancel pending notifications.
 
-    active_watch_count trigger ilə avtomatik düzəlir, əl ilə sayğac yeniləməyə ehtiyac yoxdur.
+    active_watch_count is fixed automatically by a trigger; no manual counter update is needed.
     """
     await session.execute(update(User).where(User.id == user_id).values(is_blocked=True))
     await session.execute(
@@ -88,7 +88,7 @@ async def mark_blocked(session: AsyncSession, user_id: int) -> None:
 
 
 async def mark_unblocked(session: AsyncSession, user_id: int) -> None:
-    """İstifadəçi botu yenidən başladıb: bloklama səbəbindən dondurulmuş abunəlikləri bərpa et."""
+    """The user restarted the bot: restore the watches that were frozen because of the block."""
     await session.execute(update(User).where(User.id == user_id).values(is_blocked=False))
     await session.execute(
         text(
@@ -100,10 +100,10 @@ async def mark_unblocked(session: AsyncSession, user_id: int) -> None:
 
 
 async def delete_user_data(session: AsyncSession, user_id: int) -> None:
-    """İstifadəçini və ona bağlı hər şeyi (izləmələr, bildirişlər) silir (FK ON DELETE CASCADE).
+    """Delete the user and everything tied to them (watches, notifications) (FK ON DELETE CASCADE).
 
-    active_watch_count trigger ilə avtomatik düzəlir. Qiymət tarixçəsi (price_points) marşruta aiddir,
-    istifadəçiyə yox, şəxsi məlumat daşımır və saxlanılır.
+    active_watch_count is fixed automatically by a trigger. Price history (price_points) belongs to the route,
+    not the user, carries no personal data and is kept.
     """
     await session.execute(text("DELETE FROM users WHERE id = :u"), {"u": user_id})
 

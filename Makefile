@@ -16,7 +16,7 @@ migrate:
 	alembic upgrade head
 
 revision:
-	@test -n "$(m)" || (echo 'istifadə: make revision m="təsvir"'; exit 1)
+	@test -n "$(m)" || (echo 'usage: make revision m="description"'; exit 1)
 	alembic revision --autogenerate -m "$(m)"
 
 test:

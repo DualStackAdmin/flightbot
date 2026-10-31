@@ -1,8 +1,8 @@
-"""Redis-də paylanmış Token Bucket.
+"""Distributed Token Bucket in Redis.
 
-Əvvəlki dizayndakı problem: `aiolimiter.AsyncLimiter` proses daxilidir, N replika = N x limit.
-Burada bucket Redis-dədir və vaxt Redis serverindən (TIME) götürülür, ona görə replikalar
-arasında saat sürüşməsi nəticəni pozmur.
+The problem with the earlier design: `aiolimiter.AsyncLimiter` is in-process, so N replicas = N x the limit.
+Here the bucket lives in Redis and the time comes from the Redis server (TIME), so clock skew between
+replicas does not affect the result.
 """
 
 import asyncio
@@ -47,7 +47,7 @@ class TokenBucket:
         self._script = redis.register_script(_LUA)
 
     async def acquire(self, name: str, *, rate: float, capacity: float, cost: float = 1.0) -> float:
-        """Token alırsa 0.0 qaytarır, əks halda gözləmə müddətini (saniyə) qaytarır (token sərf olunmur)."""
+        """Returns 0.0 if a token is granted, otherwise the wait time in seconds (no token is consumed)."""
         wait_ms = await self._script(keys=[f"{self._prefix}:{name}"], args=[rate, capacity, cost])
         return int(wait_ms) / 1000.0
 
@@ -60,7 +60,7 @@ class TokenBucket:
         cost: float = 1.0,
         max_wait: float = 30.0,
     ) -> None:
-        """Token alınana qədər gözləyir."""
+        """Waits until a token is granted."""
         waited = 0.0
         while True:
             w = await self.acquire(name, rate=rate, capacity=capacity, cost=cost)

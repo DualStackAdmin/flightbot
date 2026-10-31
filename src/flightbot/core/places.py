@@ -1,6 +1,6 @@
-"""Statik şəhər/aeroport siyahısı (az/ru/en adlarla) və ad üzrə axtarış.
+"""Static city/airport list (with az/ru/en names) and search by name.
 
-Provayderin autocomplete-i əlçatmaz olanda və ya FakeProvider ilə inkişaf zamanı fallback kimi işləyir.
+Works as a fallback when the provider's autocomplete is unavailable, and during development with FakeProvider.
 """
 
 import unicodedata
@@ -10,7 +10,7 @@ _TRANSLIT = str.maketrans({"ə": "e", "Ə": "e", "ı": "i", "İ": "i", "ß": "ss
 
 
 def normalize(text: str) -> str:
-    """Kiçik hərf, diakritiksiz, az-xüsusi hərflər sadələşdirilmiş (Bakı == baki == baku-yaxın)."""
+    """Lowercase, no diacritics, Azerbaijani-specific letters simplified (Bakı == baki == baku-ish)."""
     text = text.translate(_TRANSLIT).casefold()
     decomposed = unicodedata.normalize("NFKD", text)
     return "".join(c for c in decomposed if not unicodedata.combining(c)).strip()
@@ -101,7 +101,7 @@ COUNTRY: dict[str, str] = {
     "ATH": "GR",
     "NYC": "US",
 }
-# Bakıdan ən çox axtarılan istiqamətlər (quick-start düymələri üçün sıra)
+# Most searched destinations from Baku (order of the quick-start buttons)
 POPULAR_FROM_HOME = ["IST", "DXB", "TBS", "MOW", "AYT", "LON"]
 _LANG_INDEX = {"az": 0, "ru": 1, "en": 2}
 
@@ -111,7 +111,7 @@ STATIC_PLACES: dict[str, dict[str, str]] = {
 
 
 def place_name(code: str, lang: str) -> str:
-    """Kod üçün ad. Siyahıda yoxdursa kodun özü."""
+    """Name for a code. The code itself if it is not in the list."""
     names = STATIC_PLACES.get(code.upper())
     if not names:
         return code.upper()
@@ -139,7 +139,7 @@ def search_static(term: str, lang: str = "en", limit: int = 6) -> list[Place]:
 
 
 def flag_emoji(country_code: str | None) -> str:
-    """'TR' -> 🇹🇷. Naməlum/yanlış kod üçün boş sətir."""
+    """'TR' -> 🇹🇷. An empty string for an unknown/invalid code."""
     if not country_code or len(country_code) != 2 or not country_code.isalpha():
         return ""
     return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in country_code.upper())

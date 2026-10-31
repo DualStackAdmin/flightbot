@@ -1,4 +1,4 @@
-"""İzləmənin istifadəçiyə göstərilən təsviri (WatchKey dataclass və ORM sətri ilə eyni işləyir)."""
+"""Human-readable description of a watch (works with both the WatchKey dataclass and the ORM row)."""
 
 from typing import Any
 
@@ -7,7 +7,7 @@ from flightbot.bot.render import route_title
 
 
 def describe_key(k: Any, lang: str) -> tuple[str, str, str]:
-    """(marşrut, tarixlər, bayraqlar). Bayraqlar ' · birbaşa · gediş-gəliş' formasındadır (boş ola bilər)."""
+    """(route, dates, flags). Flags are localized, e.g. ' · direct · round trip' (may be empty)."""
     route = route_title(k.origin, k.destination, lang)
     month_mode = str(getattr(k.date_mode, "value", k.date_mode)) == "month"
     fmt = fmt_month if month_mode else fmt_date

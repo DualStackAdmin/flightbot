@@ -1,25 +1,26 @@
-# GitHub (qapalı repo) və Linux serverə quraşdırma
+# Private GitHub repo and Linux server setup
 
-## 1. GitHub-da qapalı (private) repo
-Layihə `git` repo kimi hazırdır (`main` branch, ilk commit). Öz kompüterinizdə:
+## 1. A private GitHub repo
+The project is a ready-made `git` repository (`main` branch, tagged `v0.2.0`). On your own machine:
 ```bash
 unzip flightbot.zip && cd flightbot
-git log --oneline            # ilk commit görünməlidir
-# Variant A: GitHub CLI (tövsiyə olunan)
+git log --oneline            # the first commits should be visible
+# Option A: GitHub CLI (recommended). Creates the repo PRIVATE and refuses to continue if it is public:
 gh auth login
-gh repo create flightbot --private --source=. --remote=origin --push
-# Variant B: GitHub saytında BOŞ private repo yaradın (README/.gitignore əlavə ETMƏYİN), sonra:
-git remote add origin git@github.com:<siz>/flightbot.git
-git push -u origin main
+./scripts/publish_to_github.sh          # or: gh repo create flightbot --private --source=. --remote=origin --push
+# Option B: create an EMPTY private repo on github.com (do NOT add a README/.gitignore), then:
+git remote add origin git@github.com:<you>/flightbot.git
+git push -u origin main --tags
 ```
-İlk commit-in müəllifi ümumi addır; öz adınızla etmək üçün: `git commit --amend --reset-author --no-edit && git push -f` (yalnız ilk push-dan əvvəl/dərhal sonra, tək istifadəçi repo-sunda).
-`.env` `.gitignore`-dadır, **tokenlər heç vaxt repo-ya düşmür**.
+The commit author is a generic name; to use your own run `git commit --amend --reset-author --no-edit && git push -f`
+(only right before/after the first push, and only on a single-user repo).
+`.env` is in `.gitignore`, so **tokens never reach the repo**.
 
-## 2. Linux serverə ilk quraşdırma
-Server üçün repo-ya yalnız oxuma icazəsi olan **deploy key** yaradın:
+## 2. First install on a Linux server
+Create a **read-only deploy key** for the server:
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/flightbot_deploy -N "" -C "flightbot-server"
-cat ~/.ssh/flightbot_deploy.pub     # GitHub repo -> Settings -> Deploy keys -> Add (Allow write access SEÇMƏYİN)
+cat ~/.ssh/flightbot_deploy.pub     # GitHub repo -> Settings -> Deploy keys -> Add (do NOT tick "Allow write access")
 cat >> ~/.ssh/config <<'CFG'
 Host github-flightbot
   HostName github.com
@@ -28,30 +29,34 @@ Host github-flightbot
   IdentitiesOnly yes
 CFG
 sudo mkdir -p /opt/flightbot && sudo chown "$USER" /opt/flightbot
-git clone git@github-flightbot:<siz>/flightbot.git /opt/flightbot
+git clone git@github-flightbot:<you>/flightbot.git /opt/flightbot
 cd /opt/flightbot && ./scripts/install.sh
 ```
-`install.sh`: Docker yoxdursa quraşdırır, `.env` yaradır (parol və webhook secret təsadüfi, `chmod 600`), `BOT_TOKEN` və (istəyə görə)
-Travelpayouts token soruşur, `docker compose up -d --build` işlədir və sağlamlığı yoxlayır.
-Qeyri-interaktiv: `BOT_TOKEN=... TRAVELPAYOUTS_TOKEN=... ./scripts/install.sh`.
+`install.sh` installs Docker if missing, creates `.env` (random password and webhook secret, `chmod 600`), asks for `BOT_TOKEN` and (optionally) the Travelpayouts token,
+runs `docker compose up -d --build` and checks health. Non-interactive: `BOT_TOKEN=... TRAVELPAYOUTS_TOKEN=... ./scripts/install.sh`.
 
-Alternativ: serverdə `gh auth login` edib `gh repo clone <siz>/flightbot`.
+Alternative: run `gh auth login` on the server and `gh repo clone <you>/flightbot`.
 
-## 3. Yeniləmə
+## 3. Updating
 ```bash
-cd /opt/flightbot && ./scripts/update.sh     # git pull --ff-only + yenidən qur + miqrasiya + köhnə image-ləri təmizlə
+cd /opt/flightbot && ./scripts/update.sh     # git pull --ff-only + rebuild + migrations + prune old images
 ```
-**Avtomatik deploy (könüllü):** `.github/workflows/deploy.yml` main-ə push və CI uğurlu olandan sonra serverdə `update.sh` işlədir.
-Repo -> Settings -> Secrets and variables -> Actions: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` (CI-nin serverə girişi üçün **ayrı** SSH açarı),
-`DEPLOY_PATH` (`/opt/flightbot`). Secret-lər yoxdursa job səssizcə keçilir. Bu workflow hələ real serverdə sınanmayıb.
+**Automatic deploy (optional):** `.github/workflows/deploy.yml` runs `update.sh` on the server after a push to main and a green CI run.
+Repo -> Settings -> Secrets and variables -> Actions: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` (a **separate** SSH key for CI to log in to the server),
+`DEPLOY_PATH` (`/opt/flightbot`). If the secrets are missing the job is skipped silently. This workflow has not been tested on a real server yet.
 
-**Geri qayıtma:** `git checkout <əvvəlki-commit> && docker compose up -d --build`. Diqqət: miqrasiyalar irəli yönlüdür; sxem dəyişən
-buraxılışı geri alanda `docker compose run --rm migrate alembic downgrade -1` lazım ola bilər (əvvəlcə backup).
+**Rolling back:** `git checkout <previous-commit> && docker compose up -d --build`. Caution: migrations are forward-only; when rolling back a release that changed the schema you may need
+`docker compose run --rm migrate alembic downgrade -1` (take a backup first).
 
-## 4. Dəyişiklikləri GitHub-a necə çatdırmaq
-Bu söhbətdə mən GitHub-a **push edə bilmirəm** (hesabınıza girişim yoxdur və tokeni söhbətə yazmağınız təhlükəsizdir deyil).
-Seçimlər:
-1. **Yeniləmə paketi:** hər dəyişiklikdən sonra sizə `.patch` fayl (və ya yeni zip) verirəm: `git apply update.patch && git commit -am "..." && git push`.
-   Əvvəlcə GitHub-da öz əlinizlə dəyişiklik etsəniz, patch toqquşa bilər.
-2. **Claude Code:** kompüterinizdə repo qovluğunda Claude Code işlədin: kodu birbaşa repo-da dəyişir, test edir və commit/push edə bilir,
-   yəni yükləmə addımı olmur. Qurulum üçün Anthropic-in rəsmi sənədinə baxın.
+## 4. Getting changes into GitHub
+The assistant that generated this project cannot push to your GitHub (it has no access to your account, and pasting a token into a chat is unsafe). Options:
+1. **Update bundle:** after each change you receive a `.patch` file (or a new zip): `git apply update.patch && git commit -am "..." && git push`.
+   If you edited the repo on GitHub in the meantime, the patch may conflict.
+2. **Claude Code:** run Claude Code in the repo directory on your machine: it edits the code directly, tests it, and can commit/push, so there is no download step.
+   See Anthropic's official documentation for setup.
+
+## 5. Before making the repo public
+- Pick a license (replace `LICENSE`) and update the README status note.
+- Replace or empty the affiliate marker in `.env.example` and the `travelpayouts_marker` default in `config.py`, otherwise forks earn commissions for your partner ID.
+- Re-scan the git history for tokens (`git log -p | grep -E '[0-9]{8,10}:[A-Za-z0-9_-]{35}'`) and rotate anything that ever leaked.
+- Review the legal items in `docs/LAUNCH_CHECKLIST.md` (privacy policy, terms, partner-program terms).

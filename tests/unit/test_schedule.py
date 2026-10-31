@@ -29,7 +29,7 @@ def test_jitter_within_ten_percent():
 def test_jitter_actually_spreads_values():
     rng = random.Random(2)
     values = {round(sch.next_check_delay(10, False, rng).total_seconds()) for _ in range(50)}
-    assert len(values) > 10  # eyni anda yaranan açarlar eyni saniyədə yoxlanmır
+    assert len(values) > 10  # keys created at the same moment aren't checked in the same second
 
 
 def test_failure_backoff_exponential_and_capped():

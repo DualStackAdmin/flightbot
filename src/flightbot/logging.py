@@ -1,4 +1,4 @@
-"""Strukturlaşdırılmış logging (structlog)."""
+"""Structured logging (structlog)."""
 
 import logging
 import sys

@@ -1,147 +1,160 @@
 # FlightBot ✈️
 
-**Telegram üzərində aviabilet qiymətlərini izləyən və qiymət hədəfdən aşağı düşəndə xəbər verən platforma.**
-Bakıdan çıxış, Azərbaycan dili, AZN, "ay üzrə ən ucuz gün" və "hər yerə" axtarışı.
+**A Telegram bot that tracks flight prices and tells you when a fare drops below your target.**
+Home-city departures, "cheapest day of the month" watches, and an "anywhere" search that lists the cheapest destinations worldwide.
 
 `Python 3.12` · `aiogram 3` · `PostgreSQL 16` · `Redis 7` · `SQLAlchemy 2 (async)` · `Alembic` · `Docker`
 
-> 🔒 **Qapalı (private) layihə.** Mənbə kodu paylaşılmır, bax: [LICENSE](LICENSE). Versiya: **v0.2.0**, qapalı beta öncəsi
-> (bax: [CHANGELOG](CHANGELOG.md), [`docs/LAUNCH_CHECKLIST.md`](docs/LAUNCH_CHECKLIST.md)).
+> **Status: v0.2.1, pre-beta.** The repository is currently private and proprietary (see [LICENSE](LICENSE)).
+> Choose a license before making it public, and read the note on the affiliate marker in [Configuration](#configuration).
+> See the [CHANGELOG](CHANGELOG.md) and [`docs/LAUNCH_CHECKLIST.md`](docs/LAUNCH_CHECKLIST.md).
 
-**Məzmun:** [İstifadəçi təcrübəsi](#istifadəçi-təcrübəsi) · [Texniki əsas](#texniki-əsas) · [Quraşdırma](#quraşdırma) ·
-[Bot əmrləri](#bot-əmrləri) · [Konfiqurasiya](#konfiqurasiya-əsas) · [Testlər](#testlər) · [Təhlükəsizlik](#təhlükəsizlik) ·
-[İş axışı və versiyalar](#iş-axışı-və-versiyalar) · [Struktur](#struktur) · [Sənədlər](#sənədlər)
+**Contents:** [User experience](#user-experience) · [Technical foundations](#technical-foundations) · [Installation](#installation) ·
+[Bot commands](#bot-commands) · [Configuration](#configuration) · [Languages](#languages) · [Tests](#tests) · [Security](#security) ·
+[Workflow and releases](#workflow-and-releases) · [Project layout](#project-layout) · [Documentation](#documentation)
 
-## İstifadəçi təcrübəsi
+## User experience
 
-- **3 toxunuşla izləmə:** `/new` → haraya → ay → hədəf. Haradan = ev şəhəri (Bakı), tək istiqamət, birbaşa məcburi deyil ("⚙️ Ətraflı" düyməsi ilə açılır).
-- **🌍 Hər yerə:** ay seçin, Bakıdan həmin ay üzrə dünyada ən ucuz istiqamətləri görün, birini seçin: bilet linki və ya "qiymət düşəndə xəbər ver".
-- **Bot heç vaxt susmur:** "İstanbul" və ya "Bakı Dubay" yazmaq kifayətdir, tanınmayan hər şeyə menyu ilə cavab verir.
-- **Hər addımda Geri / Ləğv**, mesajlar yerində redaktə olunur (söhbət uzanmır).
-- **Hədəf qiymət köməyi:** hazırkı qiymət, 90 günlük median, ⭐ tövsiyə olunan hədəf; hədəf artıq ödənibsə xəbərdarlıq.
-- **Bildirişdən idarəetmə:** ⏸ Dayandır, 🎯 Hədəfi dəyiş, 👍/👎 rəy. **Sakit saatlar** (23:00-08:00 Bakı vaxtı) gecə bildirişlərini səhərə saxlayır.
-- 3 dil (az/ru/en), AZN/USD/EUR, `/delete` ilə bütün məlumatı silmək.
+- **A watch in 3 taps:** `/new` → destination → month → target price. Origin defaults to the user's home city, one-way, direct-only off (a "⚙️ Details" button unlocks round trip and direct-only).
+- **🌍 Anywhere:** pick a month and see the cheapest destinations worldwide from your home city; open one for a booking link or "notify me when cheaper".
+- **The bot never goes silent:** typing "Istanbul" or "Baku Dubai" is enough, and anything it doesn't understand gets a reply with the menu.
+- **Back / Cancel on every step**; messages are edited in place, so the chat doesn't grow.
+- **Target-price help:** current price, 90-day median, a ⭐ recommended target, and a warning when the target is already met.
+- **Manage from the notification:** ⏸ pause, 🎯 change target, 👍/👎 feedback. **Quiet hours** (23:00-08:00 Baku time by default) hold night-time notifications until morning.
+- 3 UI languages (az / ru / en), AZN / USD / EUR, and `/delete` to erase all of a user's data.
 
-## Texniki əsas
+## Technical foundations
 
-- **Dedup:** eyni marşrutu izləyən 800 nəfər = **1** provayder sorğusu (`watch_keys`). Yük testində 21 000 izləmə → 1 000 sorğu.
-- **Outbox:** bildirişlər Postgres-də yazılır, ayrıca broadcaster göndərir. Redis düşsə belə bildiriş itmir.
-- **Telegram limitlərinə hörmət:** paylanmış token bucket (25 msg/s qlobal, 1 msg/s istifadəçi), RetryAfter üçün ümumi pauza.
-- **Etibarlı bildiriş:** təkrar yoxdur, cooldown, gündəlik limit, anomaliya təsdiqi (xəta tarifi yalançı siqnalı).
-- **Horizontal miqyas:** bütün worker-lər `SKIP LOCKED` ilə işləyir, istənilən sayda replika təhlükəsizdir.
+- **Dedup:** 800 people watching the same route cost **one** provider request (`watch_keys`). In the load test, 21,000 watches produced 1,000 requests.
+- **Outbox:** notifications are written to Postgres and sent by a separate broadcaster, so they survive a Redis outage.
+- **Respects Telegram limits:** a distributed token bucket (25 msg/s global, 1 msg/s per user) and a shared pause on RetryAfter.
+- **Trustworthy alerts:** no repeats, cooldown, daily limit, and anomaly confirmation (protection against "error fare" false positives).
+- **Horizontal scale:** every worker uses `SKIP LOCKED`, so any number of replicas is safe.
 
-## Quraşdırma
+## Installation
 
-### Linux server (tövsiyə olunan): repo klonla + 1 əmr
-Ətraflı: [`docs/DEPLOY.md`](docs/DEPLOY.md) (GitHub-da qapalı repo yaratmaq da orada).
+### Linux server (recommended): clone the repo + one command
+Details, including how to create the private GitHub repo: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 ```bash
-git clone git@github.com:<siz>/flightbot.git /opt/flightbot && cd /opt/flightbot
-./scripts/install.sh      # Docker-i özü quraşdırır, .env yaradır (BOT_TOKEN soruşur), hər şeyi işə salır
+git clone git@github.com:<you>/flightbot.git /opt/flightbot && cd /opt/flightbot
+./scripts/install.sh      # installs Docker if needed, creates .env (asks for BOT_TOKEN), starts everything
 ```
-Yeniləmə: `./scripts/update.sh` (git pull + yenidən qur + miqrasiya). Token olmadan sınaq üçün `PROVIDER=fake` (demo qiymətlər).
+Update with `./scripts/update.sh` (git pull + rebuild + migrations). For a token-free trial use `PROVIDER=fake` (demo prices).
 
-### Lokal (Docker-siz)
+### Local (without Docker)
 ```bash
 python -m venv .venv && source .venv/bin/activate && make install
 export DATABASE_URL=postgresql+asyncpg://flightbot:flightbot@localhost:5432/flightbot
 export REDIS_URL=redis://localhost:6379/0 BOT_TOKEN=123:abc
 make migrate
-python -m flightbot.bot        # bir terminalda
-python -m flightbot.workers    # digərində (poller + broadcaster + janitor)
+python -m flightbot.bot        # in one terminal
+python -m flightbot.workers    # in another (poller + broadcaster + janitor)
 ```
-Webhook + avtomatik TLS: `.env`-də `BOT_MODE=webhook`, `WEBHOOK_BASE_URL`, `WEBHOOK_SECRET`, `DOMAIN` və `docker compose --profile webhook up -d`.
+Webhook + automatic TLS: set `BOT_MODE=webhook`, `WEBHOOK_BASE_URL`, `WEBHOOK_SECRET` and `DOMAIN` in `.env`, then `docker compose --profile webhook up -d`.
 Prometheus: `--profile monitoring`.
 
-## Bot əmrləri
+## Bot commands
 
-| Əmr | Nə edir |
+| Command | What it does |
 |---|---|
-| `/new` | Yeni izləmə (haraya → ay → hədəf) |
-| `/explore` | 🌍 Hər yerə: seçilmiş ay üzrə ən ucuz istiqamətlər |
-| `/search` | Marşrut üzrə ayın ən ucuz 5 günü |
-| `/list` | İzləmələr: dayandır / davam et / hədəfi dəyiş / sil |
-| `/settings` | Dil, valyuta, ev şəhəri, sakit saatlar |
-| `/delete` | Bütün məlumatı təsdiqlə birdəfəlik silmək |
+| `/new` | New watch (destination → month → target) |
+| `/explore` | 🌍 Anywhere: the cheapest destinations for a chosen month |
+| `/search` | The 5 cheapest days of a month for one route |
+| `/list` | Your watches: pause / resume / change target / delete |
+| `/settings` | Language, currency, home city, quiet hours |
+| `/delete` | Permanently delete all your data (with confirmation) |
 
 Admin: `python -m flightbot.cli stats` · `grant-pro <telegram_id> --days 30` · `revoke-pro <telegram_id>`.
 
-## Konfiqurasiya (əsas)
+## Configuration
 
-Tam siyahı: [`.env.example`](.env.example) və `src/flightbot/config.py`.
+Full list: [`.env.example`](.env.example) and `src/flightbot/config.py`.
 
-| Dəyişən | Default | Qeyd |
+| Variable | Default | Notes |
 |---|---|---|
-| `BOT_TOKEN` | n/a | məcburi |
-| `PROVIDER` | `fake` | `travelpayouts` üçün `TRAVELPAYOUTS_TOKEN` |
-| `TRAVELPAYOUTS_MARKER` | `794979` | partnyor ID: affiliate gəlir buradan; kabinetdə təsdiqləyin |
-| `PROVIDER_RPS` | 3 | real limiti provayder sənədindən yoxlayın |
-| `BOT_MODE` | `polling` | `webhook` üçün `WEBHOOK_BASE_URL` + `WEBHOOK_SECRET` |
-| `TELEGRAM_GLOBAL_RPS` | 25 | Telegram ~30; 5 msg/s canlı cavablar üçün ehtiyat |
-| `QUIET_START_HOUR` / `QUIET_END_HOUR` / `QUIET_TZ` | 23 / 8 / `Asia/Baku` | bərabər olsalar sakit saatlar söndürülür |
-| `DB_STATEMENT_CACHE_SIZE` | 100 | PgBouncer (transaction mode) arxasında `0` |
+| `BOT_TOKEN` | n/a | required |
+| `PROVIDER` | `fake` | `travelpayouts` requires `TRAVELPAYOUTS_TOKEN` |
+| `TRAVELPAYOUTS_MARKER` | `794979` | affiliate partner ID. **Replace it with your own, or leave it empty, before publishing or sharing the code: anyone who deploys the defaults would earn commissions for this marker.** Confirm in your Travelpayouts dashboard that the number is a *marker*, not a referral-program code. |
+| `PROVIDER_RPS` | 3 | verify the real limit in the provider's docs |
+| `BOT_MODE` | `polling` | `webhook` needs `WEBHOOK_BASE_URL` + `WEBHOOK_SECRET` |
+| `TELEGRAM_GLOBAL_RPS` | 25 | Telegram allows ~30; keeps 5 msg/s of headroom for live replies |
+| `QUIET_START_HOUR` / `QUIET_END_HOUR` / `QUIET_TZ` | 23 / 8 / `Asia/Baku` | equal hours disable quiet hours |
+| `DEFAULT_LANGUAGE` | `az` | fallback when the user's Telegram language isn't supported |
+| `DB_STATEMENT_CACHE_SIZE` | 100 | set to `0` behind PgBouncer (transaction mode) |
 
-## Testlər
+## Languages
+
+The bot UI ships in **Azerbaijani (default fallback), Russian and English** (`src/flightbot/bot/i18n/`), and the built-in city names are in the same three languages (`core/places.py`).
+Everything else in the repository (code, comments, docs, scripts) is in English. The language is guessed from the user's Telegram settings and can be changed in `/settings`.
+CI checks that every language has the same message keys and placeholders, so a missing translation fails the build.
+
+Adding a language (outline): create `bot/i18n/<code>.py` (copy `en.py`: `MESSAGES`, `MONTHS_NOM`, `MONTHS_GEN`, `LANGUAGE_NAME`), register it in `bot/i18n/__init__.py`,
+add the code to `SUPPORTED_LANGUAGES` (`core/users.py`) and to the `Settings.default_language` literal, extend the `ck_users_language` constraint with a new Alembic migration,
+and add city names in `core/places.py`. Run the tests: the parity test tells you what is missing.
+
+## Tests
 
 ```bash
-make test        # real PostgreSQL + Redis lazımdır
+make test        # needs real PostgreSQL and Redis
 make lint
-make loadtest    # 21 000 izləmə, dedup/limit/indeks yoxlaması (DB-ni silir!)
+make loadtest    # 21,000 watches: dedup / limit / index checks (WIPES the database!)
 ```
-Testlər `TEST_DATABASE_URL` / `TEST_REDIS_URL` oxuyur (default: lokal `flightbot_test`, Redis db 15).
-Əhatə: alert qaydaları, SKIP LOCKED yarışı, kvota və gündəlik limit race-ləri, outbox/broadcaster xəta halları,
-Redis outage, sakit saatlar, bot axını (Telegram mock sessiyası ilə, düymə-düymə: standart axın, geri/ləğv,
-fallback, explore, redaktə, ayarlar), webhook secret yoxlaması, miqrasiya ↔ model drift yoxlaması.
+Tests read `TEST_DATABASE_URL` / `TEST_REDIS_URL` (defaults: local `flightbot_test`, Redis db 15).
+Coverage: alert rules, the SKIP LOCKED race, quota and daily-limit races, outbox/broadcaster failure paths, Redis outage, quiet hours,
+the bot flow with a mocked Telegram session (tap by tap: default flow, back/cancel, fallback, explore, editing, settings),
+webhook secret verification, and a migration ↔ model drift check.
+The bot end-to-end tests drive the UI in Azerbaijani, so their assertions intentionally contain Azerbaijani bot messages.
 
-## Təhlükəsizlik
+## Security
 
-- `.env` (tokenlər, parollar) **heç vaxt** repo-ya düşmür (`.gitignore`); `install.sh` onu `chmod 600` ilə yaradır.
-- Repo yalnız **private** olmalıdır: `./scripts/publish_to_github.sh` repo-nu private yaradır, açıq olarsa dayanır və push-dan əvvəl izlənən fayllarda token axtarır.
-- Serverə repo-ya **yalnız oxuma** icazəli deploy key verin (`docs/DEPLOY.md`). CI/CD üçün ayrıca SSH açarı istifadə edin.
-- Webhook `X-Telegram-Bot-Api-Secret-Token` ilə qorunur (səhv token → 401, testlə təsdiqlənib).
-- Token və ya parol təsadüfən commit olunsa: **əvvəlcə dəyişdirin** (BotFather `/revoke`, Travelpayouts-da yeni token), sonra git tarixçəsindən silin. Yalnız tarixçədən silmək kifayət deyil.
-- İstifadəçi məlumatı minimaldır (Telegram ID, dil, valyuta, izləmələr); `/delete` hamısını silir.
+- `.env` (tokens, passwords) is **never** committed (`.gitignore`); `install.sh` creates it with `chmod 600`.
+- The repo should stay **private** until you decide otherwise: `./scripts/publish_to_github.sh` creates it private, aborts if it is public, and scans tracked files for tokens before pushing.
+- Give the server a **read-only** deploy key (`docs/DEPLOY.md`) and use a separate SSH key for CI/CD.
+- The webhook is protected with `X-Telegram-Bot-Api-Secret-Token` (a wrong token returns 401, verified by a test).
+- If a token or password is committed by accident: **rotate it first** (BotFather `/revoke`, a new Travelpayouts token), then purge it from the git history. Removing it from history alone is not enough.
+- User data is minimal (Telegram ID, language, currency, watches); `/delete` removes all of it.
 
-## İş axışı və versiyalar
+## Workflow and releases
 
 ```bash
-make install && make test && make lint     # dəyişiklikdən əvvəl/sonra
-git switch -c feature/<ad>                 # kiçik dəyişikliklər birbaşa main-ə də ola bilər (tək developer)
+make install && make test && make lint     # before/after changes
+git switch -c feature/<name>               # small changes may go straight to main (single developer)
 git commit -am "..." && git push
-git tag -a v0.3.0 -m "v0.3.0" && git push --tags   # buraxılış; CHANGELOG.md-ni yeniləyin
+git tag -a v0.3.0 -m "v0.3.0" && git push --tags   # release; update CHANGELOG.md
 ```
-CI (`.github/workflows/ci.yml`) hər push-da lint + testləri real Postgres/Redis ilə işlədir. Dependabot həftəlik asılılıq yeniləmələri açır.
-Serverdə yeniləmə: `./scripts/update.sh`. Sxem dəyişəndə yeni miqrasiya: `make revision m="təsvir"` və **əl ilə yoxlayın**.
+CI (`.github/workflows/ci.yml`) runs lint and the tests against real Postgres/Redis on every push. Dependabot opens weekly dependency updates.
+On the server: `./scripts/update.sh`. For a schema change create a migration with `make revision m="description"` and **review it by hand**.
 
-## Struktur
+## Project layout
 
 ```
 src/flightbot/
-  core/        # biznes məntiqi: watch_key, alert_engine, schedule, quiet, pricing, plans, users, watches
-  providers/   # provayder interfeysi, Travelpayouts, Fake, keş/rate-limit sarğıları, places, names
+  core/        # business logic: watch_key, alert_engine, schedule, quiet, pricing, plans, users, watches
+  providers/   # provider interface, Travelpayouts, Fake, cache/rate-limit wrappers, places, names
   workers/     # poller, broadcaster, janitor
-  bot/         # aiogram: handlers (flow mühərriki), keyboards, middlewares, i18n, render
-  db/          # modellər, session
-migrations/    # Alembic (trigger-lər və seed daxil)
-scripts/       # install.sh, update.sh, loadtest.py
-deploy/        # Prometheus, alert qaydaları, Caddyfile
-docs/          # spesifikasiya, arxitektura, ADR-lər, runbook, deploy, launch checklist, roadmap
+  bot/         # aiogram: handlers (flow engine), keyboards, middlewares, i18n, render
+  db/          # models, session
+migrations/    # Alembic (includes triggers and seed data)
+scripts/       # install.sh, update.sh, publish_to_github.sh, loadtest.py
+deploy/        # Prometheus, alert rules, Caddyfile
+docs/          # spec, architecture, ADRs, runbook, deploy, launch checklist, roadmap
 ```
 
-## Sənədlər
+## Documentation
 
-| Sənəd | Nə üçün |
+| Document | Purpose |
 |---|---|
-| [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md) | Məhsul qaydaları, planlar, bildiriş məntiqi |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Komponentlər, axınlar, dəyişməzlər, uğursuzluq rejimləri |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Arxitektura qərarları (ADR) və səbəbləri |
-| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Runbook: metrika, xəbərdarlıq, hadisə ssenariləri, backup |
-| [`docs/DEPLOY.md`](docs/DEPLOY.md) | GitHub (qapalı) və Linux server quraşdırması |
-| [`docs/LAUNCH_CHECKLIST.md`](docs/LAUNCH_CHECKLIST.md) | Buraxılışdan əvvəl real tokenlə yoxlanmalı şeylər |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Növbəti addımlar, bilinən məhdudiyyətlər |
+| [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md) | Product rules, plans, notification logic |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Components, flows, invariants, failure modes |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Architecture decision records (ADRs) and their reasons |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Runbook: metrics, alerts, incident scenarios, backups |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | Private GitHub repo and Linux server setup |
+| [`docs/LAUNCH_CHECKLIST.md`](docs/LAUNCH_CHECKLIST.md) | What to verify with real tokens before launch |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Next steps and known limitations |
 
-## Nəyin yoxlanıb, nəyin yoxlanmadığı
+## What is verified, and what is not
 
-**Yoxlanıb:** real Postgres/Redis ilə avtomatik testlər, yük testi, real worker prosesi, `install.sh` (Docker-siz dry-run rejimində).
-**Yoxlanmayıb:** real Telegram ilə işləmə, real Travelpayouts cavabları (adapter yalnız saxta HTTP ilə sınanıb; xüsusən "hər yerə"
-sorğusu və `cities.json` formatı), Docker/compose işə salınması, `deploy.yml`, Telegram Stars ödənişi (yoxdur).
-Buraxılışdan əvvəl [`docs/LAUNCH_CHECKLIST.md`](docs/LAUNCH_CHECKLIST.md)-i keçin.
+**Verified:** automated tests against real Postgres/Redis, the load test, a real worker process, and `install.sh` (in Docker-free dry-run mode).
+**Not verified:** running against real Telegram, real Travelpayouts responses (the adapter is only tested against mocked HTTP; especially the
+"anywhere" query and the `cities.json` format), starting Docker/compose, `deploy.yml`, and Telegram Stars payments (not implemented).
+Go through [`docs/LAUNCH_CHECKLIST.md`](docs/LAUNCH_CHECKLIST.md) before launch.

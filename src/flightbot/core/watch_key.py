@@ -1,7 +1,7 @@
-"""WatchKey: provayderə gedən sorğunun unikal imzası (dedup vahidi).
+"""WatchKey: the unique signature of a provider request (the dedup unit).
 
-Çevik tarix rejimində ("month") "bir ay = bir API sorğusu" olur. Bu, fan-out-un
-partlamamasının əsas şərtidir.
+In flexible date mode ("month") "one month = one API request". This is the key condition that keeps fan-out
+from exploding.
 """
 
 import calendar
@@ -21,7 +21,7 @@ class DateMode(StrEnum):
 
 
 class InvalidWatch(ValueError):
-    """`code` i18n açarıdır (bot istifadəçiyə uyğun mesajı göstərir)."""
+    """`code` is an i18n key (the bot shows the matching message to the user)."""
 
     def __init__(self, code: str) -> None:
         super().__init__(code)
@@ -96,7 +96,7 @@ class WatchKey:
 
     @property
     def window_end(self) -> date:
-        """Qalxış pəncərəsinin son günü. Bundan sonra izləmə vaxtı keçmiş sayılır."""
+        """Last day of the departure window. After it the watch counts as expired."""
         if self.date_mode is DateMode.MONTH:
             return _last_of_month(self.depart_date)
         return self.depart_date
@@ -110,7 +110,7 @@ class WatchKey:
         return self.return_date is not None
 
     def horizon_days(self, today: date) -> int:
-        """Qalxışa təxmini qalan gün (month rejimində pəncərənin ortası). Yoxlama tezliyini təyin edir."""
+        """Approximate days until departure (the middle of the window in month mode). Determines check frequency."""
         if self.date_mode is DateMode.MONTH:
             span = (self.window_end - self.window_start).days
             target = self.window_start + timedelta(days=span // 2)

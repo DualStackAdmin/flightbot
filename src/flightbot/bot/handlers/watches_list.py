@@ -102,7 +102,7 @@ async def edit_start(
         now=now,
     )
     if isinstance(cb.message, Message):
-        # Yeni mesaj: siyahı elementi/bildiriş yerində qalsın
+        # New message: the list item / notification stays in place
         await cb.message.answer(text, reply_markup=kb.edit_target_kb(key.last_price, user.language))
 
 
@@ -177,7 +177,7 @@ async def on_pause_resume(
         return
 
     if callback_data.action == "npause":
-        # Bildirişdən dayandırma: mesaj yerində qalır, yalnız idarəetmə düymələri çıxarılır
+        # Pause from a notification: the message stays, only the management buttons are removed
         await cb.answer(tr("notif.paused"), show_alert=True)
         if msg and msg.reply_markup:
             rows = [

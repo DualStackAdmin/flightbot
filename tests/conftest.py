@@ -35,11 +35,11 @@ def settings() -> Settings:
         poller_concurrency=5,
         broadcaster_batch=40,
         broadcaster_max_attempts=3,
-        telegram_global_rps=1000.0,  # testlərdə qlobal limit mane olmasın
+        telegram_global_rps=1000.0,  # the global limit must not get in the way in tests
         telegram_user_rps=1.0,
         provider_rps=1000.0,
-        quiet_start_hour=0,  # testlərdə sakit saatlar söndürülüb (bərabər = söndürülüb);
-        quiet_end_hour=0,  # konkret testlər onu özləri aktivləşdirir
+        quiet_start_hour=0,  # quiet hours are disabled in tests (equal values = disabled);
+        quiet_end_hour=0,  # specific tests enable them themselves
     )
 
 
@@ -57,12 +57,12 @@ async def engine():
         async with eng.connect() as c:
             await c.execute(text("select 1"))
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"PostgreSQL əlçatmazdır ({exc!r}); integration testləri atlanır")
+        pytest.skip(f"PostgreSQL is unreachable ({exc!r}); skipping integration tests")
     async with eng.begin() as c:
         await c.execute(text("DROP SCHEMA public CASCADE"))
         await c.execute(text("CREATE SCHEMA public"))
     cfg = _alembic_config()
-    # env.py daxilində asyncio.run istifadə olunur, ona görə ayrı thread-də
+    # env.py uses asyncio.run internally, hence a separate thread
     await asyncio.to_thread(command.upgrade, cfg, "head")
     yield eng
     await eng.dispose()
@@ -83,7 +83,7 @@ async def redis():
     try:
         await r.ping()
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"Redis əlçatmazdır ({exc!r})")
+        pytest.skip(f"Redis is unreachable ({exc!r})")
     await r.flushdb()
     yield r
     await r.flushdb()
@@ -91,7 +91,7 @@ async def redis():
 
 
 class MutableClock:
-    """Test üçün idarə olunan saat."""
+    """A controllable clock for tests."""
 
     def __init__(self, start: datetime | None = None) -> None:
         self.now = start or datetime.now(UTC)

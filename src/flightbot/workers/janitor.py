@@ -1,4 +1,4 @@
-"""Texniki baxım: vaxtı keçmiş izləmələr, sayğac drift yoxlaması, köhnə datanın təmizlənməsi."""
+"""Housekeeping: expired watches, counter drift check, purging old data."""
 
 import asyncio
 from datetime import date
@@ -28,7 +28,7 @@ async def expire_past_watches(s: AsyncSession, today: date) -> int:
 
 
 async def reconcile_counts(s: AsyncSession) -> int:
-    """Trigger səhv etməməlidir, amma əlavə sığorta: sürüşmə varsa düzəlt və metrikaya yaz."""
+    """The trigger should never be wrong, but as extra insurance: fix any drift and record it in the metrics."""
     res = await s.execute(
         text(
             """

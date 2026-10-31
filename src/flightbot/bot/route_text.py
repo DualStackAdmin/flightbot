@@ -1,5 +1,5 @@
-"""Axından kənar yazılan mətndən marşrut çıxarmaq: "Bakı İstanbul", "istanbul", "GYD-IST".
-Yalnız statik siyahı ilə və yalnız ƏMİN uyğunluqla (yanlış marşrut təklif etməkdənsə, susmaq yaxşıdır)."""
+"""Extract a route from free text: "Baku Istanbul", "istanbul", "GYD-IST".
+Uses only the static list and only EXACT matches (better to stay silent than to suggest a wrong route)."""
 
 import re
 
@@ -20,13 +20,13 @@ def resolve_place_strict(term: str, lang: str) -> Place | None:
         names = STATIC_PLACES[place.code].values()
         if q == place.code.casefold() or any(normalize(n) == q for n in names):
             return place
-    if len(found) == 1 and len(q) >= 3:  # tək prefiks uyğunluğu (məs. "bak" -> Bakı)
+    if len(found) == 1 and len(q) >= 3:  # single prefix match (e.g. "bak" -> Baku)
         return found[0]
     return None
 
 
 def parse_route(text: str, lang: str) -> tuple[Place | None, Place] | None:
-    """(origin|None, destination). Tək yer = (None, dest): mənşə istifadəçinin ev şəhəridir."""
+    """(origin|None, destination). A single place = (None, dest): the origin is the user's home city."""
     text = (text or "").strip()
     if not text or len(text) > MAX_LEN:
         return None

@@ -1,4 +1,4 @@
-# Tək əmrlə: cp .env.example .env && docker compose up -d --build
+# One command: cp .env.example .env && docker compose up -d --build
 # Webhook + TLS:      docker compose --profile webhook up -d
 # Prometheus:         docker compose --profile monitoring up -d
 name: flightbot
@@ -28,8 +28,8 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # Redis-də kritik data yoxdur (FSM, keş, rate limiter). Bildirişlər Postgres-dədir.
-  # volatile-lru: yalnız TTL-i olan açarlar silinə bilər (bütün açarlarımızın TTL-i var).
+  # Nothing critical lives in Redis (FSM, cache, rate limiter). Notifications are in Postgres.
+  # volatile-lru: only keys with a TTL can be evicted (all of our keys have one).
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
@@ -66,7 +66,7 @@ services:
       timeout: 5s
       retries: 3
 
-  # poller + broadcaster + janitor. SKIP LOCKED sayəsində istənilən sayda replika təhlükəsizdir:
+  # poller + broadcaster + janitor. Thanks to SKIP LOCKED any number of replicas is safe:
   #   docker compose up -d --scale worker=3
   worker:
     <<: *app
@@ -86,7 +86,7 @@ services:
     image: caddy:2
     profiles: ["webhook"]
     environment:
-      DOMAIN: ${DOMAIN:?webhook profili üçün DOMAIN təyin edin}
+      DOMAIN: ${DOMAIN:?set DOMAIN for the webhook profile}
     ports:
       - "80:80"
       - "443:443"
