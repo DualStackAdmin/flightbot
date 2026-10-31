@@ -1,7 +1,16 @@
 # FlightBot ✈️
 
-Telegram üzərində aviabilet qiymətlərini izləyən və qiymət hədəfdən aşağı düşəndə xəbər verən platforma.
-Python 3.12 · aiogram 3 · PostgreSQL 16 · Redis 7 · SQLAlchemy 2 (async) · Alembic.
+**Telegram üzərində aviabilet qiymətlərini izləyən və qiymət hədəfdən aşağı düşəndə xəbər verən platforma.**
+Bakıdan çıxış, Azərbaycan dili, AZN, "ay üzrə ən ucuz gün" və "hər yerə" axtarışı.
+
+`Python 3.12` · `aiogram 3` · `PostgreSQL 16` · `Redis 7` · `SQLAlchemy 2 (async)` · `Alembic` · `Docker`
+
+> 🔒 **Qapalı (private) layihə.** Mənbə kodu paylaşılmır, bax: [LICENSE](LICENSE). Versiya: **v0.2.0**, qapalı beta öncəsi
+> (bax: [CHANGELOG](CHANGELOG.md), [`docs/LAUNCH_CHECKLIST.md`](docs/LAUNCH_CHECKLIST.md)).
+
+**Məzmun:** [İstifadəçi təcrübəsi](#istifadəçi-təcrübəsi) · [Texniki əsas](#texniki-əsas) · [Quraşdırma](#quraşdırma) ·
+[Bot əmrləri](#bot-əmrləri) · [Konfiqurasiya](#konfiqurasiya-əsas) · [Testlər](#testlər) · [Təhlükəsizlik](#təhlükəsizlik) ·
+[İş axışı və versiyalar](#iş-axışı-və-versiyalar) · [Struktur](#struktur) · [Sənədlər](#sənədlər)
 
 ## İstifadəçi təcrübəsi
 
@@ -83,6 +92,26 @@ Testlər `TEST_DATABASE_URL` / `TEST_REDIS_URL` oxuyur (default: lokal `flightbo
 Redis outage, sakit saatlar, bot axını (Telegram mock sessiyası ilə, düymə-düymə: standart axın, geri/ləğv,
 fallback, explore, redaktə, ayarlar), webhook secret yoxlaması, miqrasiya ↔ model drift yoxlaması.
 
+## Təhlükəsizlik
+
+- `.env` (tokenlər, parollar) **heç vaxt** repo-ya düşmür (`.gitignore`); `install.sh` onu `chmod 600` ilə yaradır.
+- Repo yalnız **private** olmalıdır: `./scripts/publish_to_github.sh` repo-nu private yaradır, açıq olarsa dayanır və push-dan əvvəl izlənən fayllarda token axtarır.
+- Serverə repo-ya **yalnız oxuma** icazəli deploy key verin (`docs/DEPLOY.md`). CI/CD üçün ayrıca SSH açarı istifadə edin.
+- Webhook `X-Telegram-Bot-Api-Secret-Token` ilə qorunur (səhv token → 401, testlə təsdiqlənib).
+- Token və ya parol təsadüfən commit olunsa: **əvvəlcə dəyişdirin** (BotFather `/revoke`, Travelpayouts-da yeni token), sonra git tarixçəsindən silin. Yalnız tarixçədən silmək kifayət deyil.
+- İstifadəçi məlumatı minimaldır (Telegram ID, dil, valyuta, izləmələr); `/delete` hamısını silir.
+
+## İş axışı və versiyalar
+
+```bash
+make install && make test && make lint     # dəyişiklikdən əvvəl/sonra
+git switch -c feature/<ad>                 # kiçik dəyişikliklər birbaşa main-ə də ola bilər (tək developer)
+git commit -am "..." && git push
+git tag -a v0.3.0 -m "v0.3.0" && git push --tags   # buraxılış; CHANGELOG.md-ni yeniləyin
+```
+CI (`.github/workflows/ci.yml`) hər push-da lint + testləri real Postgres/Redis ilə işlədir. Dependabot həftəlik asılılıq yeniləmələri açır.
+Serverdə yeniləmə: `./scripts/update.sh`. Sxem dəyişəndə yeni miqrasiya: `make revision m="təsvir"` və **əl ilə yoxlayın**.
+
 ## Struktur
 
 ```
@@ -97,6 +126,18 @@ scripts/       # install.sh, update.sh, loadtest.py
 deploy/        # Prometheus, alert qaydaları, Caddyfile
 docs/          # spesifikasiya, arxitektura, ADR-lər, runbook, deploy, launch checklist, roadmap
 ```
+
+## Sənədlər
+
+| Sənəd | Nə üçün |
+|---|---|
+| [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md) | Məhsul qaydaları, planlar, bildiriş məntiqi |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Komponentlər, axınlar, dəyişməzlər, uğursuzluq rejimləri |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Arxitektura qərarları (ADR) və səbəbləri |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Runbook: metrika, xəbərdarlıq, hadisə ssenariləri, backup |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | GitHub (qapalı) və Linux server quraşdırması |
+| [`docs/LAUNCH_CHECKLIST.md`](docs/LAUNCH_CHECKLIST.md) | Buraxılışdan əvvəl real tokenlə yoxlanmalı şeylər |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Növbəti addımlar, bilinən məhdudiyyətlər |
 
 ## Nəyin yoxlanıb, nəyin yoxlanmadığı
 
