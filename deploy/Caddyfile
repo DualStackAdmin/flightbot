@@ -1,0 +1,5 @@
+# Webhook rejimi üçün TLS (Let's Encrypt avtomatik). DOMAIN mühit dəyişənindən gəlir.
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy bot:8080
+}

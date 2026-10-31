@@ -1,0 +1,34 @@
+# Könüllü avtomatik deploy: main-ə push və CI uğurlu olandan sonra serverdə ./scripts/update.sh işləyir.
+# Aktiv etmək üçün GitHub repo -> Settings -> Secrets and variables -> Actions:
+#   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY (özəl açar), DEPLOY_PATH (məs. /opt/flightbot)
+# Secret-lər təyin edilməyibsə job səssizcə keçilir.
+name: Deploy
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    concurrency: deploy-production
+    steps:
+      - name: Deploy over SSH
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER_NAME: ${{ secrets.DEPLOY_USER }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          APP_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$KEY" ]; then
+            echo "DEPLOY_* secret-ləri təyin edilməyib, deploy keçildi."
+            exit 0
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$USER_NAME@$HOST" \
+            "cd '${APP_PATH:-/opt/flightbot}' && ./scripts/update.sh"

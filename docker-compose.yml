@@ -1,0 +1,116 @@
+# Tək əmrlə: cp .env.example .env && docker compose up -d --build
+# Webhook + TLS:      docker compose --profile webhook up -d
+# Prometheus:         docker compose --profile monitoring up -d
+name: flightbot
+
+x-app: &app
+  build: .
+  env_file: .env
+  environment: &app-env
+    DATABASE_URL: postgresql+asyncpg://flightbot:${POSTGRES_PASSWORD:-flightbot}@postgres:5432/flightbot
+    REDIS_URL: redis://redis:6379/0
+    LOG_JSON: "true"
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: flightbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flightbot}
+      POSTGRES_DB: flightbot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flightbot -d flightbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # Redis-də kritik data yoxdur (FSM, keş, rate limiter). Bildirişlər Postgres-dədir.
+  # volatile-lru: yalnız TTL-i olan açarlar silinə bilər (bütün açarlarımızın TTL-i var).
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  bot:
+    <<: *app
+    command: ["python", "-m", "flightbot.bot"]
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/metrics', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
+  # poller + broadcaster + janitor. SKIP LOCKED sayəsində istənilən sayda replika təhlükəsizdir:
+  #   docker compose up -d --scale worker=3
+  worker:
+    <<: *app
+    command: ["python", "-m", "flightbot.workers"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/metrics', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:2
+    profiles: ["webhook"]
+    environment:
+      DOMAIN: ${DOMAIN:?webhook profili üçün DOMAIN təyin edin}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+    depends_on:
+      - bot
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ["monitoring"]
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - bot
+      - worker
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  caddydata:

@@ -1,0 +1,43 @@
+# Alertmanager qoşulmayıb: qaydalar Prometheus UI-da görünür. İstehsalda Alertmanager/Grafana Cloud əlavə edin.
+groups:
+  - name: flightbot
+    rules:
+      - alert: NotificationQueueLagHigh
+        expr: notification_queue_lag_seconds > 300
+        for: 5m
+        annotations:
+          summary: "Bildiriş növbəsi 5+ dəqiqə gecikir"
+          description: "Broadcaster ayaq tutmur, Telegram limiti və ya replika sayını yoxlayın (docs/OPERATIONS.md)."
+
+      - alert: TelegramRateLimited
+        expr: increase(telegram_errors_total{type="retry_after"}[10m]) > 0
+        annotations:
+          summary: "Telegram 429 (RetryAfter) alınıb"
+          description: "Hədəf = 0. TELEGRAM_GLOBAL_RPS dəyərini və broadcaster replika sayını yoxlayın."
+
+      - alert: ProviderErrorRateHigh
+        expr: >
+          sum(rate(provider_requests_total{status!="ok"}[10m]))
+          / clamp_min(sum(rate(provider_requests_total[10m])), 0.001) > 0.2
+        for: 10m
+        annotations:
+          summary: "Qiymət provayderi xətaları > 20%"
+
+      - alert: DueKeysBacklog
+        expr: due_watch_keys > 500
+        for: 15m
+        annotations:
+          summary: "Poller geridə qalır (>500 vaxtı çatmış açar)"
+          description: "Provayder RPS limiti və ya poller replika sayı çatmır."
+
+      - alert: WatchCountDrift
+        expr: increase(active_watch_count_drift_total[1h]) > 0
+        annotations:
+          summary: "active_watch_count trigger-i ilə real say uyğun gəlmir (janitor düzəltdi)"
+          description: "Bu baş verməməlidir. Trigger-lərin mövcudluğunu yoxlayın."
+
+      - alert: WorkerDown
+        expr: up{job="flightbot-worker"} == 0
+        for: 2m
+        annotations:
+          summary: "Worker əlçatmazdır"
