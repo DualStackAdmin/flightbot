@@ -9,7 +9,7 @@ description = "Telegram flight price tracking platform (watch-key dedup, transac
 requires-python = ">=3.12"
 dependencies = [
     "aiogram>=3.13,<4",
-    "sqlalchemy[asyncio]>=2.0.30,<2.1",
+    "sqlalchemy[asyncio]>=2.0.30,<2.2",
     "asyncpg>=0.29",
     "alembic>=1.13",
     "redis>=5.0",
