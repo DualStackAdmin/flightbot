@@ -31,7 +31,7 @@ class FakeProvider:
         bucket = int(now.timestamp() // (3 * 3600))
         walk = 0.80 + (_h(key.cache_id(), bucket) % 45) / 100  # 0.80..1.24
         direct = 1.15 if key.direct_only else 1.0
-        rt = 1.8 if key.return_date else 1.0
+        rt = 1.8 if key.is_round_trip else 1.0
         return Decimal(str(round(base * day_factor * walk * direct * rt, 2)))
 
     async def offers(self, key: WatchKey, *, limit: int = 30, fresh: bool = False) -> list[PriceQuote]:
@@ -44,12 +44,17 @@ class FakeProvider:
         quotes = []
         for d in days:
             h = _h(key.cache_id(), d, "meta")
+            if key.has_stay:
+                span = key.stay_max - key.stay_min + 1
+                return_date = d + timedelta(days=key.stay_min + _h(key.cache_id(), d, "stay") % span)
+            else:
+                return_date = key.return_date
             quotes.append(
                 PriceQuote(
                     price=self._price(key, d, now),
                     currency=key.currency,
                     depart_date=d,
-                    return_date=key.return_date,
+                    return_date=return_date,
                     airline=_AIRLINES[h % len(_AIRLINES)],
                     transfers=0 if key.direct_only else h % 2,
                     found_at=now,
@@ -69,13 +74,23 @@ class FakeProvider:
         direct_only: bool = False,
         limit: int = 20,
         fresh: bool = False,
+        stay: tuple[int, int] | None = None,
     ) -> list[PriceQuote]:
         now = self._now()
         quotes = []
         for dest in STATIC_PLACES:
             if dest == origin:
                 continue
-            key = WatchKey(origin, dest, DateMode.MONTH, month.replace(day=1), None, direct_only, currency)
+            key = WatchKey(
+                origin,
+                dest,
+                DateMode.MONTH,
+                month.replace(day=1),
+                None,
+                direct_only,
+                currency,
+                *(stay if stay else (None, None)),
+            )
             depart = max(month.replace(day=1), now.date()) + timedelta(days=_h(key.cache_id()) % 20)
             h = _h(key.cache_id(), "meta")
             quotes.append(
@@ -83,7 +98,7 @@ class FakeProvider:
                     price=self._price(key, depart, now),
                     currency=currency,
                     depart_date=depart,
-                    return_date=None,
+                    return_date=depart + timedelta(days=stay[0]) if stay else None,
                     airline=_AIRLINES[h % len(_AIRLINES)],
                     transfers=0 if direct_only else h % 2,
                     found_at=now,

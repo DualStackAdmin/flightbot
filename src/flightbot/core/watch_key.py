@@ -13,6 +13,7 @@ from enum import StrEnum
 IATA_RE = re.compile(r"^[A-Z]{3}$")
 CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 MAX_HORIZON_DAYS = 360
+MAX_STAY_DAYS = 30
 
 
 class DateMode(StrEnum):
@@ -45,6 +46,9 @@ class WatchKey:
     return_date: date | None
     direct_only: bool
     currency: str
+    # Round trip by month: how many days the traveller stays (inclusive range). None = not a stay-based key.
+    stay_min: int | None = None
+    stay_max: int | None = None
 
     @classmethod
     def create(
@@ -57,6 +61,8 @@ class WatchKey:
         return_date: date | None = None,
         direct_only: bool = False,
         currency: str = "USD",
+        stay_min: int | None = None,
+        stay_max: int | None = None,
         today: date,
     ) -> "WatchKey":
         origin = origin.strip().upper()
@@ -88,7 +94,16 @@ class WatchKey:
         if (depart_date - today).days > MAX_HORIZON_DAYS:
             raise InvalidWatch("date_too_far")
 
-        return cls(origin, destination, mode, depart_date, return_date, direct_only, currency)
+        if stay_min is not None or stay_max is not None:
+            # A stay applies to "round trip, any departure day in the month": exact dates use return_date instead.
+            if stay_min is None or stay_max is None or mode is not DateMode.MONTH or return_date is not None:
+                raise InvalidWatch("bad_stay")
+            if not 1 <= stay_min <= stay_max <= MAX_STAY_DAYS:
+                raise InvalidWatch("bad_stay")
+
+        return cls(
+            origin, destination, mode, depart_date, return_date, direct_only, currency, stay_min, stay_max
+        )
 
     @property
     def window_start(self) -> date:
@@ -107,7 +122,11 @@ class WatchKey:
 
     @property
     def is_round_trip(self) -> bool:
-        return self.return_date is not None
+        return self.return_date is not None or self.stay_min is not None
+
+    @property
+    def has_stay(self) -> bool:
+        return self.stay_min is not None
 
     def horizon_days(self, today: date) -> int:
         """Approximate days until departure (the middle of the window in month mode). Determines check frequency."""
@@ -120,7 +139,8 @@ class WatchKey:
 
     def cache_id(self) -> str:
         ret = self.return_date.isoformat() if self.return_date else "-"
+        stay = f"{self.stay_min}-{self.stay_max}" if self.has_stay else "-"
         return (
             f"{self.origin}:{self.destination}:{self.date_mode.value}:"
-            f"{self.depart_date.isoformat()}:{ret}:{int(self.direct_only)}:{self.currency}"
+            f"{self.depart_date.isoformat()}:{ret}:{int(self.direct_only)}:{self.currency}:{stay}"
         )

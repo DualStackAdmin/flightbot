@@ -49,9 +49,11 @@ class PriceProvider(Protocol):
         direct_only: bool = False,
         limit: int = 20,
         fresh: bool = False,
+        stay: tuple[int, int] | None = None,
     ) -> list[PriceQuote]:
         """ "Anywhere": the cheapest destinations in the world from `origin` in a given month (one offer per destination),
-        sorted by price ascending. `PriceQuote.destination` is set."""
+        sorted by price ascending. `PriceQuote.destination` is set. With `stay=(min, max)` the offers are
+        round trips whose length of stay falls in that range."""
         ...
 
 
@@ -88,3 +90,26 @@ def quote_from_json(d: dict[str, Any]) -> PriceQuote:
         provider=d["provider"],
         destination=d.get("destination"),
     )
+
+
+def next_month(d: date) -> date:
+    return date(d.year + d.month // 12, d.month % 12 + 1, 1)
+
+
+def filter_by_stay(
+    quotes: list[PriceQuote], stay_min: int, stay_max: int, window: tuple[date, date] | None = None
+) -> list[PriceQuote]:
+    """Keep round trips whose stay is within [stay_min, stay_max] days (and whose departure is inside the window),
+    without duplicates, sorted by price."""
+    seen: set[tuple] = set()
+    out: list[PriceQuote] = []
+    for q in sorted(quotes, key=lambda q: q.price):
+        if q.return_date is None or not stay_min <= (q.return_date - q.depart_date).days <= stay_max:
+            continue
+        if window is not None and not window[0] <= q.depart_date <= window[1]:
+            continue
+        sig = (q.destination, q.depart_date, q.return_date, q.price, q.airline)
+        if sig not in seen:
+            seen.add(sig)
+            out.append(q)
+    return out

@@ -9,7 +9,7 @@ per the docs only the cheapest ticket per destination is returned. Verify this b
 """
 
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -18,11 +18,19 @@ import httpx
 from flightbot import metrics
 from flightbot.core.watch_key import DateMode, WatchKey
 from flightbot.logging import get_logger
-from flightbot.providers.base import PriceQuote, ProviderError, ProviderRateLimited
+from flightbot.providers.base import (
+    PriceQuote,
+    ProviderError,
+    ProviderRateLimited,
+    filter_by_stay,
+    next_month,
+)
 
 log = get_logger(__name__)
 
 PRICES_URL = "https://api.travelpayouts.com/aviasales/v3/prices_for_dates"
+# Round trips by length of stay: fetch more rows, because many are filtered out by the stay.
+STAY_FETCH_LIMIT = 100
 
 
 def _date_param(d: date, mode: DateMode) -> str:
@@ -90,7 +98,7 @@ class TravelpayoutsProvider:
             "currency": key.currency.lower(),
             "sorting": "price",
             "direct": "true" if key.direct_only else "false",
-            "one_way": "false" if key.return_date else "true",
+            "one_way": "false" if key.is_round_trip else "true",
             "unique": "false",
             "limit": limit,
             "page": 1,
@@ -134,8 +142,18 @@ class TravelpayoutsProvider:
         raise ProviderError(f"provider unavailable: {last_exc!r}")
 
     async def offers(self, key: WatchKey, *, limit: int = 30, fresh: bool = False) -> list[PriceQuote]:
-        payload = await self._fetch(self._params(key, limit))
-        return parse_offers(payload, key, self.name)
+        if not key.has_stay:
+            payload = await self._fetch(self._params(key, limit))
+            return parse_offers(payload, key, self.name)
+        # Round trip with a length of stay: the return can fall into the next month, so ask for both
+        # return months and keep only the trips whose stay matches. Costs 2 requests (see RateLimitedProvider).
+        quotes: list[PriceQuote] = []
+        for return_month in (key.depart_date, next_month(key.depart_date)):
+            params = self._params(key, STAY_FETCH_LIMIT)
+            params["return_at"] = return_month.strftime("%Y-%m")
+            quotes += parse_offers(await self._fetch(params), key, self.name)
+        window = (key.window_start, key.window_end)
+        return filter_by_stay(quotes, key.stay_min, key.stay_max, window)[:limit]
 
     async def explore(
         self,
@@ -146,6 +164,7 @@ class TravelpayoutsProvider:
         direct_only: bool = False,
         limit: int = 20,
         fresh: bool = False,
+        stay: tuple[int, int] | None = None,
     ) -> list[PriceQuote]:
         params: dict[str, Any] = {
             "origin": origin,
@@ -158,7 +177,20 @@ class TravelpayoutsProvider:
             "limit": max(limit * 3, 30),  # enough left after filtering (origin==dest, duplicates)
             "page": 1,
         }
-        quotes = parse_rows(await self._fetch(params), currency, self.name)
+        if stay is None:
+            quotes = parse_rows(await self._fetch(params), currency, self.name)
+        else:
+            quotes = []
+            for return_month in (month, next_month(month)):
+                quotes += parse_rows(
+                    await self._fetch(
+                        {**params, "one_way": "false", "return_at": return_month.strftime("%Y-%m")}
+                    ),
+                    currency,
+                    self.name,
+                )
+            last_day = next_month(month) - timedelta(days=1)
+            quotes = filter_by_stay(quotes, stay[0], stay[1], (month.replace(day=1), last_day))
         best: dict[str, PriceQuote] = {}
         for q in quotes:  # sorted by price ascending
             if q.destination and q.destination != origin and q.destination not in best:

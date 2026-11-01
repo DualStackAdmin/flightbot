@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import pytest
 
+from flightbot.core.watch_key import DateMode
 from flightbot.providers.base import PriceQuote, ProviderError
 from flightbot.providers.wrappers import CachedProvider, RateLimitedProvider
 from flightbot.ratelimit import RateLimitTimeout, TokenBucket
@@ -136,3 +137,15 @@ async def test_rate_limited_provider_waits_for_shared_bucket(redis):
     await asyncio.gather(*(rl.offers(k) for _ in range(6)))  # capacity 20 -> all go through immediately
     assert time.monotonic() - t0 < 0.5 and inner.calls == 6
     assert isinstance(PriceQuote, type)
+
+
+async def test_stay_round_trips_cost_two_provider_tokens(redis):
+    inner = ScriptedProvider(100)
+    bucket = TokenBucket(redis)
+    rl = RateLimitedProvider(inner, bucket, rps=10)
+    await rl.offers(key())
+    one_way = float((await redis.hget("rl:provider:scripted", "tokens")).decode())
+    await redis.delete("rl:provider:scripted")
+    await rl.offers(key(days=40, stay=7, mode=DateMode.MONTH))
+    stay = float((await redis.hget("rl:provider:scripted", "tokens")).decode())
+    assert round(10 - one_way) == 1 and round(10 - stay) == 2  # two HTTP requests are paid for

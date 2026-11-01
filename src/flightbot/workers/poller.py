@@ -62,7 +62,7 @@ _CLAIM_SQL = text(
     FROM due
     WHERE wk.id = due.id
     RETURNING wk.id, wk.origin, wk.destination, wk.date_mode, wk.depart_date, wk.return_date,
-              wk.direct_only, wk.currency, wk.consecutive_failures
+              wk.direct_only, wk.currency, wk.stay_min, wk.stay_max, wk.consecutive_failures
     """
 )
 
@@ -87,6 +87,8 @@ async def claim_due_keys(session: AsyncSession, *, limit: int, lease_s: int) -> 
                 return_date=r.return_date,
                 direct_only=r.direct_only,
                 currency=r.currency,
+                stay_min=r.stay_min,
+                stay_max=r.stay_max,
             ),
             consecutive_failures=r.consecutive_failures,
         )

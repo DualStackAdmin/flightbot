@@ -47,6 +47,13 @@ Telegram requires Stars for digital goods (verify the official rules before laun
 ## ADR-012: Quiet hours live in the poller, not in delivery
 The notification is written to the outbox with `available_at`; the broadcaster is unchanged. Upside: the broadcaster stays simple and the queue-lag metric counts only notifications that are due. Downside: by the time it is delivered in the morning the price may have changed (the notification says so).
 
+## ADR-014: Length of stay is part of the dedup signature
+**Context:** most users search round trips ("a week in Istanbul"), not one-way tickets or an exact return month.
+**Decision:** a month watch can carry `stay_min/stay_max`. The provider fetches round trips for both possible return months
+(the return can spill into the next month) and keeps those whose stay is in range. The rate limiter charges 2 tokens.
+**Consequence:** (+) matches how people search; "7 days" watches are still deduplicated across users. (−) twice the provider requests
+for these keys, and different stays are different keys. Whether the Data API returns enough round-trip rows per month must be verified with a real token.
+
 ## ADR-013: The repository is English; the bot UI is multilingual
 **Context:** the repo is meant to become public eventually; the bot serves Azerbaijani, Russian and English users.
 **Decision:** all code, comments, docs, scripts and logs are English. User-facing text lives only in the i18n catalogs (`bot/i18n/{az,ru,en}.py`) and the static city names (`core/places.py`). A test verifies key/placeholder parity across languages.

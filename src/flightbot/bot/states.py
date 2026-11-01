@@ -7,11 +7,10 @@ class Flow(StatesGroup):
 
     dest = State()
     origin = State()
-    when = State()
-    date = State()
-    trip = State()
-    ret = State()
-    direct = State()
+    trip = State()  # one way / round trip with N days / pick dates on a calendar
+    when = State()  # month selection
+    cal_dep = State()  # calendar: departure date
+    cal_ret = State()  # calendar: return date
     target = State()
     x_when = State()  # explore: month selection
     x_list = State()  # explore: list of destinations

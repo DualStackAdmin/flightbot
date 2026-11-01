@@ -81,12 +81,19 @@ class WatchKey(Base):
             "return_date",
             "direct_only",
             "currency",
+            "stay_min",
+            "stay_max",
             name="uq_watch_keys_signature",
             postgresql_nulls_not_distinct=True,
         ),
         CheckConstraint("date_mode IN ('exact','month')", name="date_mode"),
         CheckConstraint("char_length(origin) = 3 AND char_length(destination) = 3", name="iata"),
         CheckConstraint("active_watch_count >= 0", name="count_nonneg"),
+        CheckConstraint(
+            "(stay_min IS NULL AND stay_max IS NULL) OR "
+            "(stay_min BETWEEN 1 AND 30 AND stay_max BETWEEN stay_min AND 30)",
+            name="stay_range",
+        ),
         # The scheduler only looks at keys that are due and have an active subscriber.
         Index(
             "ix_watch_keys_due",
@@ -103,6 +110,8 @@ class WatchKey(Base):
     return_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     direct_only: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     currency: Mapped[str] = mapped_column(String(3))
+    stay_min: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    stay_max: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     expires_on: Mapped[date] = mapped_column(Date)
 
     next_check_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())

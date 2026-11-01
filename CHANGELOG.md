@@ -2,6 +2,15 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/). Versions: [SemVer](https://semver.org/) (0.x = pre-beta).
 
+## [0.3.0]
+### Added
+- **Round trips by length of stay:** a trip step right after the destination: one way, round trip of 3/4/5/6/7/14 days, or exact dates on a calendar, plus a "direct only" toggle. The stay is part of the dedup signature (`watch_keys.stay_min/stay_max`, migration `0003`).
+- **Tap calendar** for exact dates (Monday-first, localized weekdays, past and out-of-range days disabled, month navigation). Typing a date still works. Return must be after departure and within 30 days.
+- `/search` and `/explore` support N-day round trips (results show departure → return dates; booking links are round-trip searches).
+### Changed
+- The old "⚙️ Details" step (round trip / direct) is replaced by the trip step. Typing exact dates moved into the calendar step.
+- Stay-based round trips cost 2 provider requests (both possible return months) and are charged 2 tokens by the shared rate limiter.
+
 ## [0.2.1]
 ### Changed
 - The whole repository is now in English: code comments and docstrings, error and log messages, CLI/script output, configuration comments, tests, README and `docs/`. No behavior changed.

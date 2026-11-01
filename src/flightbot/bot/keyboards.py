@@ -84,51 +84,42 @@ def months_rows(which: str, months: list[date], lang: str) -> list[Row]:
     return _pairs(buttons)
 
 
-def when_kb(months: list[date], lang: str, *, simple: bool, advanced: bool) -> InlineKeyboardMarkup:
+def when_kb(months: list[date], lang: str, *, exact: bool) -> InlineKeyboardMarkup:
+    """Month grid. `exact`: also offer an exact departure date on a calendar (one-way watches)."""
     rows = months_rows("dep", months, lang)
-    if not simple:
+    if exact:
         rows.append([_btn(t(lang, "btn.exact_date"), cb.GoCb(to="exact"))])
-        label = t(lang, "btn.advanced_on" if advanced else "btn.advanced")
-        rows.append([_btn(label, cb.GoCb(to="advanced"))])
     rows.append(nav_row(lang))
     return _kb(rows)
 
 
-def explore_months_kb(months: list[date], origin: str, lang: str, *, back: bool) -> InlineKeyboardMarkup:
-    rows = months_rows("dep", months, lang)
-    rows.append([_btn(t(lang, "btn.origin_change", origin=place_name(origin, lang)), cb.GoCb(to="origin"))])
+STAY_OPTIONS = (3, 4, 5, 6, 7, 14)
+
+
+def trip_kb(
+    lang: str, *, direct: bool, calendar: bool, back: bool, origin: str | None = None
+) -> InlineKeyboardMarkup:
+    """One tap chooses the trip: one way, a round trip of N days, or exact dates on a calendar.
+    `origin`: also offer to change the origin (used by explore, which has no destination step)."""
+    rows: list[Row] = [[_btn(t(lang, "btn.oneway"), cb.TripCb(kind="oneway"))]]
+    stays = [_btn(t(lang, "btn.stay", n=n), cb.TripCb(kind="stay", n=n)) for n in STAY_OPTIONS]
+    rows += [stays[:3], stays[3:]]
+    if calendar:
+        rows.append([_btn(t(lang, "btn.calendar"), cb.TripCb(kind="dates"))])
+    state = t(lang, "state.on" if direct else "state.off")
+    rows.append([_btn(t(lang, "btn.direct_toggle", state=state), cb.GoCb(to="direct"))])
+    if origin:
+        rows.append(
+            [_btn(t(lang, "btn.origin_change", origin=place_name(origin, lang)), cb.GoCb(to="origin"))]
+        )
     rows.append(nav_row(lang, back=back))
     return _kb(rows)
 
 
-def ret_months_kb(months: list[date], lang: str) -> InlineKeyboardMarkup:
-    rows = months_rows("ret", months, lang)
+def explore_months_kb(months: list[date], lang: str) -> InlineKeyboardMarkup:
+    rows = months_rows("dep", months, lang)
     rows.append(nav_row(lang))
     return _kb(rows)
-
-
-def trip_kb(lang: str) -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [
-                _btn(t(lang, "btn.oneway"), cb.TripCb(round_trip=0)),
-                _btn(t(lang, "btn.roundtrip"), cb.TripCb(round_trip=1)),
-            ],
-            nav_row(lang),
-        ]
-    )
-
-
-def direct_kb(lang: str) -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [
-                _btn(t(lang, "btn.yes"), cb.DirectCb(direct=1)),
-                _btn(t(lang, "btn.no"), cb.DirectCb(direct=0)),
-            ],
-            nav_row(lang),
-        ]
-    )
 
 
 def nav_only_kb(lang: str, *, back: bool = True) -> InlineKeyboardMarkup:

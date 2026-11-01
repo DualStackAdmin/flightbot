@@ -47,6 +47,12 @@ async def key_price_stats(session: AsyncSession, key: WatchKey, now: datetime) -
                 else WatchKeyRow.return_date == key.return_date,
                 WatchKeyRow.direct_only == key.direct_only,
                 WatchKeyRow.currency == key.currency,
+                WatchKeyRow.stay_min.is_(None)
+                if key.stay_min is None
+                else WatchKeyRow.stay_min == key.stay_min,
+                WatchKeyRow.stay_max.is_(None)
+                if key.stay_max is None
+                else WatchKeyRow.stay_max == key.stay_max,
             )
         )
     ).scalar_one_or_none()

@@ -421,3 +421,13 @@ async def test_redis_outage_delays_key_without_counting_failure(sm, settings):
         <= float(await scalar(sm, "select extract(epoch from (next_check_at - now())) from watch_keys"))
         <= 90
     )
+
+
+async def test_round_trip_stay_key_is_polled_and_notifies(sm, settings):
+    u = await make_user(sm, 1)
+    await make_watch(sm, u, key(mode=DateMode.MONTH, days=40, stay=7), 500)
+    prov = ScriptedProvider(100)
+    await poller(sm, prov, settings).run_once()
+    assert prov.calls == 1
+    assert await scalar(sm, "select count(*) from notifications") == 1
+    assert (await rows(sm, "select stay_min, stay_max from watch_keys"))[0] == (7, 7)

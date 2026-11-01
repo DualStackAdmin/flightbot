@@ -55,6 +55,12 @@ def _check_quota(limits, active: int, flexible: int, is_flexible: bool) -> None:
         raise QuotaExceeded("max_flexible", limits.max_flexible_watches)
 
 
+def _stay_conditions(key: WatchKey) -> list:
+    if not key.has_stay:
+        return [WatchKeyRow.stay_min.is_(None), WatchKeyRow.stay_max.is_(None)]
+    return [WatchKeyRow.stay_min == key.stay_min, WatchKeyRow.stay_max == key.stay_max]
+
+
 async def get_or_create_key_id(session: AsyncSession, key: WatchKey) -> int:
     values = dict(
         origin=key.origin,
@@ -64,6 +70,8 @@ async def get_or_create_key_id(session: AsyncSession, key: WatchKey) -> int:
         return_date=key.return_date,
         direct_only=key.direct_only,
         currency=key.currency,
+        stay_min=key.stay_min,
+        stay_max=key.stay_max,
         expires_on=key.window_end,
     )
     stmt = (
@@ -90,6 +98,7 @@ async def get_or_create_key_id(session: AsyncSession, key: WatchKey) -> int:
                 ret_cond,
                 WatchKeyRow.direct_only == key.direct_only,
                 WatchKeyRow.currency == key.currency,
+                *_stay_conditions(key),
             )
         )
     ).scalar_one()

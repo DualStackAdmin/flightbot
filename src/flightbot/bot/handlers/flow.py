@@ -1,13 +1,14 @@
 """Flow engine: the shared step system for /new, /search and /explore.
 
-Goal: the default watch takes 3 touches (destination -> month -> target price). Origin = home city, one-way,
-"direct only" is off. Every step has "Back" and "Cancel". Transitions triggered by a callback edit the existing message.
+Steps: destination -> trip (one way / round trip of N days / exact dates on a calendar) -> month or calendar
+-> target price. Origin = home city. Every step has "Back" and "Cancel". Transitions triggered by a callback
+edit the existing message.
 """
 
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from aiogram import F, Router
@@ -17,8 +18,9 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from flightbot.bot import keyboards as kb
+from flightbot.bot.calendar_kb import calendar_kb, clamp_month
 from flightbot.bot.callbacks import (
-    DirectCb,
+    CalCb,
     ExploreCb,
     GoCb,
     MenuCb,
@@ -30,7 +32,7 @@ from flightbot.bot.callbacks import (
 )
 from flightbot.bot.deps import Deps
 from flightbot.bot.formatting import describe_key
-from flightbot.bot.i18n import esc, fmt_date, fmt_month, fmt_price
+from flightbot.bot.i18n import esc, fmt_date, fmt_month, fmt_price, t
 from flightbot.bot.parsing import next_months, parse_month_token, parse_price, parse_user_date
 from flightbot.bot.render import route_title, stops_text
 from flightbot.bot.states import Flow
@@ -41,7 +43,7 @@ from flightbot.core.places import flag_emoji, place_name
 from flightbot.core.plans import effective_plan, limits_for
 from flightbot.core.stats import key_price_stats
 from flightbot.core.users import set_home
-from flightbot.core.watch_key import MAX_HORIZON_DAYS, InvalidWatch, WatchKey
+from flightbot.core.watch_key import MAX_HORIZON_DAYS, MAX_STAY_DAYS, InvalidWatch, WatchKey
 from flightbot.core.watches import QuotaExceeded, count_active, create_or_update_watch
 from flightbot.db.models import User
 from flightbot.logging import get_logger
@@ -59,11 +61,10 @@ EXPLORE_ITEMS = 10
 STEP_STATE = {
     "dest": Flow.dest,
     "origin": Flow.origin,
-    "when": Flow.when,
-    "date": Flow.date,
     "trip": Flow.trip,
-    "ret": Flow.ret,
-    "direct": Flow.direct,
+    "when": Flow.when,
+    "cal_dep": Flow.cal_dep,
+    "cal_ret": Flow.cal_ret,
     "target": Flow.target,
     "x_when": Flow.x_when,
     "x_list": Flow.x_list,
@@ -101,15 +102,39 @@ def _origin(d: dict, c: Ctx) -> str:
     return d.get("origin") or c.user.home_iata or c.deps.settings.default_home_iata
 
 
+def _trip_label(d: dict, lang: str) -> str:
+    trip = d.get("trip") or "oneway"
+    if trip == "stay":
+        return t(lang, "trip.stay", n=d["stay"])
+    if trip == "dates":
+        return t(lang, "trip.dates")
+    return t(lang, "trip.oneway")
+
+
+def _route(d: dict, c: Ctx) -> str:
+    origin = _origin(d, c)
+    if d.get("destination"):
+        return route_title(origin, d["destination"], c.lang)
+    return f"{place_name(origin, c.lang)} → {t(c.lang, 'explore.anywhere')}"
+
+
+def _stay(d: dict) -> int | None:
+    return d.get("stay") if d.get("trip") == "stay" else None
+
+
 def _build_key(d: dict, user: User) -> WatchKey:
+    stay = _stay(d)
+    ret = d.get("ret") if d.get("trip") == "dates" else None
     return WatchKey.create(
         origin=d["origin"],
         destination=d["destination"],
         date_mode=d.get("mode", "month"),
         depart_date=date.fromisoformat(d["depart"]),
-        return_date=date.fromisoformat(d["ret"]) if d.get("ret") else None,
+        return_date=date.fromisoformat(ret) if ret else None,
         direct_only=bool(d.get("direct")),
         currency=user.currency,
+        stay_min=stay,
+        stay_max=stay,
         today=_today(),
     )
 
@@ -122,6 +147,10 @@ def _date_error(d: date, today: date, not_before: date | None = None) -> str | N
     if (d - today).days > MAX_HORIZON_DAYS:
         return "date_too_far"
     return None
+
+
+def _dates_label(depart: date, ret: date | None, lang: str) -> str:
+    return f"{fmt_date(depart, lang)} → {fmt_date(ret, lang)}" if ret else fmt_date(depart, lang)
 
 
 # ================================================================== step engine
@@ -157,48 +186,63 @@ async def render(c: Ctx, step: str, text: str | None = None) -> None:
     has_history = bool(d.get("history"))
 
     if step == "dest":
-        await show(
-            c.target,
+        await c.show(
             text or tr("step.dest", origin=esc(place_name(origin, lang))),
             kb.dest_kb(origin, lang, explore=purpose == "watch"),
         )
     elif step == "origin":
         await c.show(tr("step.origin"), kb.origin_kb(c.user.home_iata, origin, lang, back=has_history))
-    elif step == "when":
-        route = esc(route_title(origin, d["destination"], lang))
-        simple = purpose == "search"
-        body = f"<b>{route}</b>\n\n{tr('search.ask_month')}" if simple else tr("step.when", route=route)
-        await show(
-            c.target,
-            body,
-            kb.when_kb(next_months(today, MONTH_GRID), lang, simple=simple, advanced=bool(d.get("advanced"))),
-        )
-    elif step == "x_when":
-        await show(
-            c.target,
-            tr("explore.ask_month", origin=esc(place_name(origin, lang))),
-            kb.explore_months_kb(next_months(today, MONTH_GRID), origin, lang, back=has_history),
-        )
-    elif step == "date":
-        await c.show(tr("step.date"), kb.nav_only_kb(lang))
     elif step == "trip":
-        await c.show(tr("step.trip"), kb.trip_kb(lang))
-    elif step == "ret":
-        if d.get("mode") == "exact":
-            await c.show(tr("step.ret_date"), kb.nav_only_kb(lang))
+        await c.show(
+            text or tr("step.trip", route=esc(_route(d, c))),
+            kb.trip_kb(
+                lang,
+                direct=bool(d.get("direct")),
+                calendar=purpose == "watch",
+                back=has_history,
+                origin=origin if purpose == "explore" else None,
+            ),
+        )
+    elif step == "when":
+        route, trip = esc(_route(d, c)), _trip_label(d, lang)
+        if purpose == "search":
+            body = f"<b>{route}</b> · {trip}\n\n{tr('search.ask_month')}"
         else:
-            depart_month = date.fromisoformat(d["depart"])
-            months = [m for m in next_months(today, 12) if m >= depart_month][:MONTH_GRID]
-            await c.show(tr("step.ret_month"), kb.ret_months_kb(months, lang))
-    elif step == "direct":
-        await c.show(tr("step.direct"), kb.direct_kb(lang))
+            body = tr("step.when", route=route, trip=trip)
+        exact = purpose == "watch" and (d.get("trip") or "oneway") == "oneway"
+        await c.show(body, kb.when_kb(next_months(today, MONTH_GRID), lang, exact=exact))
+    elif step == "x_when":
+        await c.show(
+            tr("explore.ask_month", origin=esc(place_name(origin, lang)), trip=_trip_label(d, lang)),
+            kb.explore_months_kb(next_months(today, MONTH_GRID), lang),
+        )
+    elif step == "cal_dep":
+        min_day, max_day = today, today + timedelta(days=MAX_HORIZON_DAYS)
+        month = clamp_month(date.fromisoformat(d.get("cal_month") or today.isoformat()), min_day, max_day)
+        await c.show(
+            tr("step.cal_dep", route=esc(_route(d, c)), trip=_trip_label(d, lang)),
+            calendar_kb("dep", month, lang, min_day=min_day, max_day=max_day, nav_row=kb.nav_row(lang)),
+        )
+    elif step == "cal_ret":
+        depart = date.fromisoformat(d["depart"])
+        min_day = depart + timedelta(days=1)
+        max_day = min(depart + timedelta(days=MAX_STAY_DAYS), today + timedelta(days=MAX_HORIZON_DAYS))
+        month = clamp_month(date.fromisoformat(d.get("cal_month") or depart.isoformat()), min_day, max_day)
+        await c.show(
+            tr("step.cal_ret", route=esc(_route(d, c)), date=fmt_date(depart, lang)),
+            calendar_kb("ret", month, lang, min_day=min_day, max_day=max_day, nav_row=kb.nav_row(lang)),
+        )
     elif step == "target":
         await render_target(c)
     elif step == "x_list":
         month = date.fromisoformat(d["explore_month"])
-        await show(
-            c.target,
-            tr("explore.header", origin=esc(place_name(origin, lang)), month=fmt_month(month, lang)),
+        await c.show(
+            tr(
+                "explore.header",
+                origin=esc(place_name(origin, lang)),
+                month=fmt_month(month, lang),
+                trip=_trip_label(d, lang),
+            ),
             kb.explore_list_kb(d["explore"], lang),
         )
     elif step == "x_detail":
@@ -231,14 +275,10 @@ async def begin(
             )
             return
     origin = origin or user.home_iata or deps.settings.default_home_iata
-    await state.update_data(purpose=purpose, origin=origin, history=[], step=None)
+    await state.update_data(purpose=purpose, origin=origin, history=[], step=None, direct=False)
     if destination:
         await state.update_data(destination=destination)
-        first = "when"
-    elif purpose == "explore":
-        first = "x_when"
-    else:
-        first = "dest"
+    first = "trip" if destination or purpose == "explore" else "dest"
     await goto(c, first, push=False, text=text)
 
 
@@ -282,7 +322,7 @@ async def menu_start(
     await begin(cb, state, user, session, tr, deps, purpose)
 
 
-# ========================================================================= naviqasiya
+# ===================================================================== navigation
 @router.callback_query(NavCb.filter(F.action == "back"))
 async def on_back(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
@@ -346,7 +386,7 @@ async def pick_destination(
         return
     await cb.answer()
     await state.update_data(destination=callback_data.code, hint_price=None)
-    await goto(_ctx(cb, state, user, session, tr, deps), "when")
+    await goto(_ctx(cb, state, user, session, tr, deps), "trip")
 
 
 @router.callback_query(PlaceCb.filter(F.role == "o"), Flow.origin)
@@ -373,7 +413,7 @@ async def pick_origin(
         await goto(c, "dest", push=False)
 
 
-@router.callback_query(GoCb.filter(F.to == "origin"), StateFilter(Flow.dest, Flow.x_when))
+@router.callback_query(GoCb.filter(F.to == "origin"), StateFilter(Flow.dest, Flow.trip))
 async def go_origin(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
 ) -> None:
@@ -396,21 +436,52 @@ async def go_explore(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
 ) -> None:
     await cb.answer()
-    await state.update_data(purpose="explore")
-    await goto(_ctx(cb, state, user, session, tr, deps), "x_when")
+    await state.update_data(purpose="explore", destination=None)
+    await goto(_ctx(cb, state, user, session, tr, deps), "trip")
 
 
-# ================================================================ month / date selection
-async def _after_when(c: Ctx) -> None:
-    """The date is settled: if "details" is on, ask trip type/direct; otherwise go straight to the target price."""
-    d = await c.state.get_data()
-    if d.get("advanced"):
-        await goto(c, "trip")
+# ======================================================================== trip type
+@router.callback_query(GoCb.filter(F.to == "direct"), Flow.trip)
+async def toggle_direct(
+    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
+) -> None:
+    await cb.answer()
+    d = await state.get_data()
+    await state.update_data(direct=not d.get("direct"))
+    await render(_ctx(cb, state, user, session, tr, deps), "trip")
+
+
+@router.callback_query(TripCb.filter(), Flow.trip)
+async def pick_trip(
+    cb: CallbackQuery,
+    callback_data: TripCb,
+    state: FSMContext,
+    user: User,
+    session: AsyncSession,
+    tr,
+    deps: Deps,
+) -> None:
+    kind = callback_data.kind
+    if kind not in ("oneway", "stay", "dates") or (
+        kind == "stay" and not 1 <= callback_data.n <= MAX_STAY_DAYS
+    ):
+        await cb.answer(tr("error.stale"), show_alert=True)
+        return
+    await cb.answer()
+    await state.update_data(
+        trip=kind, stay=callback_data.n if kind == "stay" else None, ret=None, hint_price=None, cal_month=None
+    )
+    c = _ctx(cb, state, user, session, tr, deps)
+    d = await state.get_data()
+    if d.get("purpose") == "explore":
+        await goto(c, "x_when")
+    elif kind == "dates":
+        await goto(c, "cal_dep")
     else:
-        await c.state.update_data(ret=None, direct=False)
-        await goto(c, "target")
+        await goto(c, "when")
 
 
+# ================================================================ month / calendar
 @router.callback_query(MonthCb.filter(F.which == "dep"), Flow.when)
 async def pick_month(
     cb: CallbackQuery,
@@ -432,7 +503,7 @@ async def pick_month(
     if d.get("purpose") == "search":
         await run_search(c)
     else:
-        await _after_when(c)
+        await goto(c, "target")
 
 
 @router.callback_query(GoCb.filter(F.to == "exact"), Flow.when)
@@ -440,108 +511,86 @@ async def go_exact(
     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
 ) -> None:
     await cb.answer()
-    await state.update_data(mode="exact", hint_price=None)
-    await goto(_ctx(cb, state, user, session, tr, deps), "date")
+    await state.update_data(hint_price=None, cal_month=None)
+    await goto(_ctx(cb, state, user, session, tr, deps), "cal_dep")
 
 
-@router.callback_query(GoCb.filter(F.to == "advanced"), Flow.when)
-async def go_advanced(
-    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
-) -> None:
-    await cb.answer()
-    d = await state.get_data()
-    await state.update_data(advanced=not d.get("advanced"))
-    await render(_ctx(cb, state, user, session, tr, deps), "when")
-
-
-@router.message(Flow.date, *TEXT_INPUT)
-async def date_text(
-    message: Message, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
-) -> None:
+async def _apply_date(c: Ctx, which: str, picked: date) -> str | None:
+    """Store a picked/typed date and move on. Returns an error code (i18n key suffix) or None."""
     today = _today()
-    d = parse_user_date(message.text or "", today)
-    if d is None:
-        await message.answer(tr("new.bad_date"), reply_markup=kb.nav_only_kb(user.language))
-        return
-    if err := _date_error(d, today):
-        await message.answer(tr(f"invalid.{err}"), reply_markup=kb.nav_only_kb(user.language))
-        return
-    await state.update_data(depart=d.isoformat(), mode="exact", hint_price=None)
-    await _after_when(_ctx(message, state, user, session, tr, deps))
+    d = await c.state.get_data()
+    if which == "dep":
+        if err := _date_error(picked, today):
+            return err
+        await c.state.update_data(depart=picked.isoformat(), mode="exact", hint_price=None, cal_month=None)
+        if d.get("trip") == "dates":
+            await c.state.update_data(cal_month=picked.replace(day=1).isoformat())
+            await goto(c, "cal_ret")
+        else:
+            await goto(c, "target")
+        return None
+    depart = date.fromisoformat(d["depart"])
+    if picked <= depart:
+        return "return_before_depart"
+    if (picked - depart).days > MAX_STAY_DAYS:
+        return "bad_stay"
+    if err := _date_error(picked, today):
+        return err
+    await c.state.update_data(ret=picked.isoformat(), hint_price=None)
+    await goto(c, "target")
+    return None
 
 
-@router.callback_query(TripCb.filter(), Flow.trip)
-async def pick_trip(
+@router.callback_query(CalCb.filter(), StateFilter(Flow.cal_dep, Flow.cal_ret))
+async def on_calendar(
     cb: CallbackQuery,
-    callback_data: TripCb,
+    callback_data: CalCb,
     state: FSMContext,
     user: User,
     session: AsyncSession,
     tr,
     deps: Deps,
 ) -> None:
-    await cb.answer()
+    current = await state.get_state()
+    expected = "dep" if current == Flow.cal_dep.state else "ret"
+    if callback_data.which != expected:
+        await cb.answer(tr("error.stale"), show_alert=True)
+        return
     c = _ctx(cb, state, user, session, tr, deps)
-    if callback_data.round_trip:
-        await goto(c, "ret")
-    else:
-        await state.update_data(ret=None)
-        await goto(c, "direct")
+    if callback_data.action == "noop":
+        await cb.answer()
+        return
+    if callback_data.action == "nav":
+        month = parse_month_token(f"{callback_data.v[:4]}-{callback_data.v[4:]}")
+        if month is None:
+            await cb.answer(tr("error.stale"), show_alert=True)
+            return
+        await cb.answer()
+        await state.update_data(cal_month=month.isoformat())
+        await render(c, "cal_dep" if expected == "dep" else "cal_ret")
+        return
+    try:
+        v = callback_data.v
+        picked = date(int(v[:4]), int(v[4:6]), int(v[6:8]))
+    except ValueError:
+        await cb.answer(tr("error.stale"), show_alert=True)
+        return
+    err = await _apply_date(c, expected, picked)
+    await cb.answer(tr(f"invalid.{err}") if err else None, show_alert=bool(err))
 
 
-@router.message(Flow.ret, *TEXT_INPUT)
-async def return_text(
+@router.message(StateFilter(Flow.cal_dep, Flow.cal_ret), *TEXT_INPUT)
+async def calendar_text(
     message: Message, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
 ) -> None:
-    d = await state.get_data()
-    if d.get("mode") != "exact":
-        await message.answer(tr("step.ret_month"), reply_markup=kb.nav_only_kb(user.language))
-        return
-    today = _today()
-    parsed = parse_user_date(message.text or "", today)
-    if parsed is None:
+    picked = parse_user_date(message.text or "", _today())
+    if picked is None:
         await message.answer(tr("new.bad_date"), reply_markup=kb.nav_only_kb(user.language))
         return
-    if err := _date_error(parsed, today, not_before=date.fromisoformat(d["depart"])):
+    which = "dep" if await state.get_state() == Flow.cal_dep.state else "ret"
+    err = await _apply_date(_ctx(message, state, user, session, tr, deps), which, picked)
+    if err:
         await message.answer(tr(f"invalid.{err}"), reply_markup=kb.nav_only_kb(user.language))
-        return
-    await state.update_data(ret=parsed.isoformat())
-    await goto(_ctx(message, state, user, session, tr, deps), "direct")
-
-
-@router.callback_query(MonthCb.filter(F.which == "ret"), Flow.ret)
-async def pick_return_month(
-    cb: CallbackQuery,
-    callback_data: MonthCb,
-    state: FSMContext,
-    user: User,
-    session: AsyncSession,
-    tr,
-    deps: Deps,
-) -> None:
-    month = parse_month_token(callback_data.ym)
-    d = await state.get_data()
-    if month is None or month < date.fromisoformat(d["depart"]):
-        await cb.answer(tr("invalid.return_before_depart"), show_alert=True)
-        return
-    await cb.answer()
-    await state.update_data(ret=month.isoformat())
-    await goto(_ctx(cb, state, user, session, tr, deps), "direct")
-
-
-@router.callback_query(DirectCb.filter(), Flow.direct)
-async def pick_direct(
-    cb: CallbackQuery,
-    callback_data: DirectCb,
-    state: FSMContext,
-    user: User,
-    session: AsyncSession,
-    tr,
-    deps: Deps,
-) -> None:
-    await cb.answer()
-    await state.update_data(direct=bool(callback_data.direct))
-    await goto(_ctx(cb, state, user, session, tr, deps), "target")
 
 
 # ===================================================================== target price
@@ -579,9 +628,11 @@ async def render_target(c: Ctx) -> None:
     ]
     if stats.reliable and stats.median is not None:
         info.append(c.tr("target.median", median=fmt_price(stats.median), currency=cur))
-    route, dates, _flags = describe_key(key, c.lang)
+    route, dates, flags = describe_key(key, c.lang)
     await c.state.update_data(current_price=str(current) if current is not None else None)
-    text = c.tr("step.target", route=esc(route), dates=dates, info="\n".join(info) + "\n", currency=cur)
+    text = c.tr(
+        "step.target", route=esc(route), dates=dates + flags, info="\n".join(info) + "\n", currency=cur
+    )
     await c.show(text, kb.target_kb(current, c.lang))
 
 
@@ -628,7 +679,7 @@ async def handle_target(c: Ctx, price: Decimal, *, force: bool) -> None:
     if not force and current is not None and price >= current:
         # The price is already below the target: a notification would fire immediately. The user must choose this knowingly.
         text = c.tr("target.already", current=fmt_price(current), currency=c.user.currency)
-        await c.show(text, kb.target_warning_kb(int(price * 100), c.lang))
+        await show(c.target, text, kb.target_warning_kb(int(price * 100), c.lang))
         return
     await finish_watch(c, price, current)
 
@@ -639,7 +690,7 @@ async def finish_watch(c: Ctx, price: Decimal, current: Decimal | None) -> None:
         key = _build_key(d, c.user)
     except (InvalidWatch, KeyError) as exc:
         code = getattr(exc, "code", None)
-        await c.show(c.tr(f"invalid.{code}") if code else c.tr("new.state_lost"), kb.menu_kb(c.lang))
+        await show(c.target, c.tr(f"invalid.{code}") if code else c.tr("new.state_lost"), kb.menu_kb(c.lang))
         await c.state.clear()
         return
     try:
@@ -647,7 +698,7 @@ async def finish_watch(c: Ctx, price: Decimal, current: Decimal | None) -> None:
             c.session, user_id=c.user.id, key=key, target_price=price, now=utcnow()
         )
     except QuotaExceeded as exc:
-        await c.show(c.tr(f"quota.{exc.code}", limit=exc.limit), kb.menu_kb(c.lang))
+        await show(c.target, c.tr(f"quota.{exc.code}", limit=exc.limit), kb.menu_kb(c.lang))
         await c.state.clear()
         return
     route, dates, flags = describe_key(key, c.lang)
@@ -676,20 +727,23 @@ async def finish_watch(c: Ctx, price: Decimal, current: Decimal | None) -> None:
 async def run_search(c: Ctx) -> None:
     d = await c.state.get_data()
     try:
+        stay = _stay(d)
         key = WatchKey.create(
             origin=d["origin"],
             destination=d["destination"],
             date_mode="month",
             depart_date=date.fromisoformat(d["depart"]),
+            direct_only=bool(d.get("direct")),
             currency=c.user.currency,
+            stay_min=stay,
+            stay_max=stay,
             today=_today(),
         )
     except (InvalidWatch, KeyError):
         await c.show(c.tr("new.state_lost"), kb.menu_kb(c.lang))
         await c.state.clear()
         return
-    waiting = await c.show(c.tr("search.searching"))
-    c.edit_msg = waiting
+    c.edit_msg = await c.show(c.tr("search.searching"))
     try:
         offers = await asyncio.wait_for(c.deps.provider.offers(key), PROVIDER_TIMEOUT_S + 5)
     except Exception as exc:  # noqa: BLE001
@@ -699,14 +753,16 @@ async def run_search(c: Ctx) -> None:
     if not offers:
         await c.show(c.tr("search.none"), kb.nav_only_kb(c.lang))
         return
-    best: dict[date, PriceQuote] = {}
+    best: dict[tuple, PriceQuote] = {}
     for q in offers:
-        if q.depart_date not in best or q.price < best[q.depart_date].price:
-            best[q.depart_date] = q
+        sig = (q.depart_date, q.return_date)
+        if sig not in best or q.price < best[sig].price:
+            best[sig] = q
     top = sorted(best.values(), key=lambda q: q.price)[:5]
     items = [
         {
             "date": q.depart_date.isoformat(),
+            "ret": q.return_date.isoformat() if q.return_date else None,
             "price": str(q.price),
             "currency": q.currency,
             "transfers": q.transfers,
@@ -719,19 +775,19 @@ async def run_search(c: Ctx) -> None:
 
 
 async def render_search_result(c: Ctx, d: dict, origin: str) -> None:
-    key_route = esc(route_title(origin, d["destination"], c.lang))
     month = fmt_month(date.fromisoformat(d["depart"]), c.lang)
-    lines = [c.tr("search.header", route=key_route, month=month)]
+    lines = [c.tr("search.header", route=esc(_route(d, c)), month=month, trip=_trip_label(d, c.lang))]
     for it in d["search"]:
         parts = [
             p
             for p in (stops_text(c.lang, it["transfers"]), esc(it["airline"]) if it["airline"] else None)
             if p
         ]
+        ret = date.fromisoformat(it["ret"]) if it.get("ret") else None
         lines.append(
             c.tr(
                 "search.line",
-                date=fmt_date(date.fromisoformat(it["date"]), c.lang),
+                date=_dates_label(date.fromisoformat(it["date"]), ret, c.lang),
                 price=fmt_price(it["price"]),
                 currency=it["currency"],
                 details=" · ".join(parts) or "—",
@@ -760,11 +816,17 @@ async def pick_explore_month(
     c = _ctx(cb, state, user, session, tr, deps)
     d = await state.get_data()
     origin = _origin(d, c)
+    stay = _stay(d)
     c.edit_msg = await show(cb, tr("explore.looking"))
     try:
         quotes = await asyncio.wait_for(
             deps.provider.explore(
-                origin=origin, month=month, currency=user.currency, limit=EXPLORE_ITEMS * 2
+                origin=origin,
+                month=month,
+                currency=user.currency,
+                direct_only=bool(d.get("direct")),
+                limit=EXPLORE_ITEMS * 2,
+                stay=(stay, stay) if stay else None,
             ),
             EXPLORE_TIMEOUT_S,
         )
@@ -787,6 +849,7 @@ async def pick_explore_month(
                 "price": str(q.price),
                 "currency": q.currency,
                 "depart": q.depart_date.isoformat(),
+                "ret": q.return_date.isoformat() if q.return_date else None,
                 "transfers": q.transfers,
                 "airline": q.airline,
                 "link": q.link,
@@ -818,8 +881,6 @@ async def pick_explore_item(
         destination=it["code"],
         depart=d["explore_month"],
         mode="month",
-        ret=None,
-        direct=False,
         hint_price=it["price"],
     )
     await goto(_ctx(cb, state, user, session, tr, deps), "x_detail")
@@ -829,6 +890,7 @@ async def render_explore_detail(c: Ctx, d: dict, origin: str) -> None:
     it = d["explore"][d["x_index"]]
     month = date.fromisoformat(d["explore_month"])
     depart = date.fromisoformat(it["depart"])
+    ret = date.fromisoformat(it["ret"]) if it.get("ret") else None
     parts = [
         p for p in (stops_text(c.lang, it["transfers"]), esc(it["airline"]) if it["airline"] else None) if p
     ]
@@ -837,10 +899,10 @@ async def render_explore_detail(c: Ctx, d: dict, origin: str) -> None:
         "explore.detail",
         flag=flag_emoji(it.get("cc")),
         route=route,
-        month=fmt_month(month, c.lang),
+        month=f"{fmt_month(month, c.lang)} · {_trip_label(d, c.lang)}",
         price=fmt_price(it["price"]),
         currency=it["currency"],
-        date=fmt_date(depart, c.lang),
+        date=_dates_label(depart, ret, c.lang),
         details=" · ".join(parts) or "—",
     )
     url = build_booking_link(
@@ -848,7 +910,7 @@ async def render_explore_detail(c: Ctx, d: dict, origin: str) -> None:
         origin=origin,
         destination=it["code"],
         depart_date=depart,
-        return_date=None,
+        return_date=ret,
         marker=c.deps.settings.travelpayouts_marker,
         sub_id=f"x{c.user.id}",
     )
@@ -864,7 +926,7 @@ async def go_watch(
         await cb.answer(tr("error.stale"), show_alert=True)
         return
     await cb.answer()
-    await state.update_data(mode="month", ret=None, direct=False)
+    await state.update_data(mode="month", ret=None)  # the trip type (one way / N-day stay) is kept
     await goto(_ctx(cb, state, user, session, tr, deps), "target")
 
 

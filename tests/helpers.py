@@ -25,6 +25,7 @@ def key(
     ret_days=None,
     direct=False,
     currency="USD",
+    stay=None,
 ) -> WatchKey:
     t = today()
     return WatchKey.create(
@@ -35,6 +36,8 @@ def key(
         return_date=(t + timedelta(days=ret_days)) if ret_days else None,
         direct_only=direct,
         currency=currency,
+        stay_min=stay,
+        stay_max=stay,
         today=t,
     )
 
@@ -119,8 +122,9 @@ class ScriptedProvider:
             )
         ]
 
-    async def explore(self, *, origin, month, currency, direct_only=False, limit=20, fresh=False):
+    async def explore(self, *, origin, month, currency, direct_only=False, limit=20, fresh=False, stay=None):
         self.explore_calls += 1
+        self.explore_last = {"origin": origin, "month": month, "direct_only": direct_only, "stay": stay}
         res = self.explore_result
         if isinstance(res, Exception):
             raise res

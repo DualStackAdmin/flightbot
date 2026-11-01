@@ -12,11 +12,14 @@ class MonthCb(CallbackData, prefix="mo"):
 
 
 class TripCb(CallbackData, prefix="tr"):
-    round_trip: int
+    kind: str  # 'oneway' | 'stay' | 'dates'
+    n: int = 0  # length of stay in days (kind == 'stay')
 
 
-class DirectCb(CallbackData, prefix="dr"):
-    direct: int
+class CalCb(CallbackData, prefix="cal"):
+    which: str  # 'dep' | 'ret'
+    action: str  # 'pick' | 'nav' | 'noop'
+    v: str  # YYYYMMDD for pick, YYYYMM for nav, empty for noop
 
 
 class TargetCb(CallbackData, prefix="tg"):
@@ -38,7 +41,7 @@ class NavCb(CallbackData, prefix="nv"):
 
 
 class GoCb(CallbackData, prefix="go"):
-    to: str  # 'origin' | 'exact' | 'advanced' | 'explore' | 'watch' | 'retarget' | 'sethome'
+    to: str  # 'origin' | 'exact' | 'direct' | 'explore' | 'watch' | 'retarget' | 'sethome'
 
 
 class ExploreCb(CallbackData, prefix="xp"):

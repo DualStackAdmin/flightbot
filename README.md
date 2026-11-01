@@ -5,7 +5,7 @@ Home-city departures, "cheapest day of the month" watches, and an "anywhere" sea
 
 `Python 3.12` · `aiogram 3` · `PostgreSQL 16` · `Redis 7` · `SQLAlchemy 2 (async)` · `Alembic` · `Docker`
 
-> **Status: v0.2.1, pre-beta.** The repository is currently private and proprietary (see [LICENSE](LICENSE)).
+> **Status: v0.3.0, pre-beta.** The repository is currently private and proprietary (see [LICENSE](LICENSE)).
 > Choose a license before making it public, and read the note on the affiliate marker in [Configuration](#configuration).
 > See the [CHANGELOG](CHANGELOG.md) and [`docs/LAUNCH_CHECKLIST.md`](docs/LAUNCH_CHECKLIST.md).
 
@@ -15,8 +15,8 @@ Home-city departures, "cheapest day of the month" watches, and an "anywhere" sea
 
 ## User experience
 
-- **A watch in 3 taps:** `/new` → destination → month → target price. Origin defaults to the user's home city, one-way, direct-only off (a "⚙️ Details" button unlocks round trip and direct-only).
-- **🌍 Anywhere:** pick a month and see the cheapest destinations worldwide from your home city; open one for a booking link or "notify me when cheaper".
+- **Round trips the way people search:** `/new` → destination → **trip** (one way · round trip of 3/4/5/6/7/14 days · exact dates on a tap calendar · direct-only toggle) → month → target price. Origin defaults to the user's home city.
+- **🌍 Anywhere:** pick one way or an N-day round trip and a month, and see the cheapest destinations worldwide from your home city; open one for a booking link or "notify me when cheaper".
 - **The bot never goes silent:** typing "Istanbul" or "Baku Dubai" is enough, and anything it doesn't understand gets a reply with the menu.
 - **Back / Cancel on every step**; messages are edited in place, so the chat doesn't grow.
 - **Target-price help:** current price, 90-day median, a ⭐ recommended target, and a warning when the target is already met.
@@ -57,9 +57,9 @@ Prometheus: `--profile monitoring`.
 
 | Command | What it does |
 |---|---|
-| `/new` | New watch (destination → month → target) |
+| `/new` | New watch (destination → trip type / length of stay → month or calendar → target) |
 | `/explore` | 🌍 Anywhere: the cheapest destinations for a chosen month |
-| `/search` | The 5 cheapest days of a month for one route |
+| `/search` | The 5 cheapest options of a month for one route (one way or N-day round trip) |
 | `/list` | Your watches: pause / resume / change target / delete |
 | `/settings` | Language, currency, home city, quiet hours |
 | `/delete` | Permanently delete all your data (with confirmation) |

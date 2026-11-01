@@ -55,4 +55,6 @@ Telegram ──► bot (aiogram, polling/webhook) ──┐
 - **Bot flow engine** (`bot/handlers/flow.py`): every step is its own FSM state; `step` and `history` live in the FSM data (the Back button). Callback transitions edit the message, and a "please wait" message is replaced in place by the result.
 - **Explore:** `PriceProvider.explore()` → `CachedProvider` (1 hour, singleflight) → `RateLimitedProvider` → adapter. City names come from `PlaceNames` (static list + `cities.json`, cached in Redis for 7 days).
 - **Quiet hours:** the poller writes the notification to the outbox with `available_at = deliver_after(...)` (`core/quiet.py`); the broadcaster is unchanged. `users.quiet_hours` (default on).
+- **Round trips by stay (v0.3):** `watch_keys.stay_min/stay_max` are part of the unique signature; the Travelpayouts adapter queries both return months
+  and filters by stay (`providers/base.py::filter_by_stay`); the bot flow is destination → trip → month/calendar → target.
 - **Redis errors:** the poller delays the key 60 s (not counted as a failure), the broadcaster doesn't burn attempts, the throttle fails open.

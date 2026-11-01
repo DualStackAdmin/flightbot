@@ -37,17 +37,21 @@ class RateLimitedProvider:
         self._rps = rps
         self.name = inner.name
 
-    async def _wait(self) -> None:
+    async def _wait(self, cost: float = 1.0) -> None:
         await self._bucket.wait(
-            f"provider:{self.name}", rate=self._rps, capacity=max(1.0, self._rps), max_wait=120.0
+            f"provider:{self.name}",
+            rate=self._rps,
+            capacity=max(cost, self._rps),
+            cost=cost,
+            max_wait=120.0,
         )
 
     async def offers(self, key: WatchKey, *, limit: int = 30, fresh: bool = False) -> list[PriceQuote]:
-        await self._wait()
+        await self._wait(2.0 if key.has_stay else 1.0)  # stay-based round trips cost 2 requests
         return await self._inner.offers(key, limit=limit, fresh=fresh)
 
     async def explore(self, **kwargs) -> list[PriceQuote]:
-        await self._wait()
+        await self._wait(2.0 if kwargs.get("stay") else 1.0)
         return await self._inner.explore(**kwargs)
 
 
@@ -141,8 +145,10 @@ class CachedProvider:
         direct_only: bool = False,
         limit: int = 20,
         fresh: bool = False,
+        stay: tuple[int, int] | None = None,
     ) -> list[PriceQuote]:
-        ck = f"explore:{origin}:{month:%Y-%m}:{currency}:{int(direct_only)}"
+        stay_id = f"{stay[0]}-{stay[1]}" if stay else "-"
+        ck = f"explore:{origin}:{month:%Y-%m}:{currency}:{int(direct_only)}:{stay_id}"
         quotes = await self._cached(
             ck,
             EXPLORE_TTL_S,
@@ -153,6 +159,7 @@ class CachedProvider:
                 direct_only=direct_only,
                 limit=EXPLORE_FETCH_LIMIT,
                 fresh=fresh,
+                stay=stay,
             ),
             fresh=fresh,
         )

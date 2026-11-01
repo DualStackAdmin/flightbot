@@ -135,7 +135,7 @@ async def test_explore_is_cached_and_coalesced(redis):
     assert inner.explore_calls == 1 and all(r[0].destination == "IST" for r in results)
     await cp.explore(**args)
     assert inner.explore_calls == 1  # from the cache
-    assert 0 < await redis.ttl("explore:GYD:2026-12:USD:0") <= 3600
+    assert 0 < await redis.ttl("explore:GYD:2026-12:USD:0:-") <= 3600
     await cp.explore(**args, fresh=True)
     assert inner.explore_calls == 2
 

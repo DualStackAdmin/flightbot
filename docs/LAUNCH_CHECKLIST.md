@@ -39,6 +39,7 @@ Everything in this project is tested against real Postgres/Redis, but the items 
 ## 6. Extra checks for v0.2 features
 - [ ] **Marker:** does `794979` show up in the Travelpayouts dashboard as "Partner ID / marker" (not a referral-program code)? After a test click, does it appear in the statistics with its `sub_id`?
 - [ ] **"Anywhere" (`explore`)**: with a real token, does the `prices_for_dates` request without `destination` and with `unique=true` return only the cheapest ticket per destination? (`providers/travelpayouts.py::explore`). If not, the request has to move to another endpoint.
+- [ ] **Round trips by stay (v0.3):** with a real token, does `prices_for_dates` with `one_way=false`, `departure_at=YYYY-MM`, `return_at=YYYY-MM` return enough rows for 3-14 day stays (we fetch 100 rows for both return months and filter)? If results are sparse, consider a ±1 day stay range (the model already supports it).
 - [ ] **Name resolution:** is `https://api.travelpayouts.com/data/en/cities.json` open and does it return `code`, `name`, `country_code`? (Otherwise world cities show as codes; the system doesn't break.)
 - [ ] **Quiet hours:** check once on a real phone at night that a notification is held until morning; set `QUIET_TZ` if your audience is in another time zone.
 - [ ] **Target buttons:** is the −15% recommendation sensible on real price distributions? Look at user feedback and created targets and tune it (`bot/parsing.py::quick_targets`).

@@ -3,7 +3,7 @@
 **Audience:** people in Baku and the region looking for cheap flights. Languages: az (guessed from the Telegram language, default az), ru, en. Currencies: USD, AZN, EUR.
 
 ## UX principles
-1. The first watch takes under 60 seconds: the default flow is **3 taps** (destination → month → target).
+1. The first watch takes under 60 seconds: destination → trip → month → target (4 taps).
 2. Every message has a next step (a button). No dead ends.
 3. The bot never goes silent (off-flow text, unknown commands, stickers, stale buttons).
 4. Buttons over typing (mobile). Smart defaults: origin = home city, mode = by month, one-way.
@@ -13,18 +13,20 @@
 | Scenario | Status |
 |---|---|
 | `/start`: language is guessed, popular-destination buttons appear immediately (no language question) | ✅ |
-| `/new`: destination → month → target (3 taps); "📅 Exact date" and "⚙️ Details" (round trip, direct) are optional | ✅ |
+| `/new`: destination → **trip** (one way · round trip 3/4/5/6/7/14 days · exact dates on a calendar · direct-only toggle) → month (or calendar) → target | ✅ (v0.3) |
+| Tap calendar for exact dates: past/out-of-range days disabled, month navigation, typing still works; return ≤ 30 days after departure | ✅ (v0.3) |
 | Back / Cancel on every step; callback transitions edit the same message | ✅ |
 | Target step: current price, 90-day median (if any), ⭐ recommended −15%, −10%, −25%; a warning when the target is already met | ✅ |
 | After creating: current price, "➕ Another route", "📋 My watches" | ✅ |
-| **🌍 Anywhere (`/explore`)**: month → the 10 cheapest destinations (flag, price) → detail (booking link + "notify me") | ✅ (the real response format needs verification) |
-| `/search`: the 5 cheapest days of a month for a route → "notify me" | ✅ |
+| **🌍 Anywhere (`/explore`)**: trip (one way / N days) → month → the 10 cheapest destinations (flag, price) → detail (booking link + "notify me") | ✅ (the real response format needs verification) |
+| `/search`: trip (one way / N days) → month → the 5 cheapest options (departure → return) → "notify me" | ✅ |
 | Fallback: typing "Istanbul", "Baku Dubai" or "GYD-IST" jumps straight to the month step | ✅ |
 | `/list`: pause, resume, **change target**, delete | ✅ |
 | Notification buttons: ⏸ Pause, 🎯 Change target, 👍/👎 | ✅ |
 | `/settings`: language, currency, **home city**, **quiet hours** | ✅ |
 | `/delete` | ✅ |
 | "This weekend" quick pick | ❌ skipped: exact-date queries are sparse in the Data API cache; month mode is more reliable |
+| A flexible stay range (e.g. 5-7 days) | ⏳ supported by the data model (`stay_min`/`stay_max`), the UI offers exact N for now |
 | "Next N days" mode | ❌ removed: it breaks the one-watch = one-API-request rule ("by month" replaces it) |
 
 ## Notification rules (all in `core/alert_engine.py`, covered by tests)
