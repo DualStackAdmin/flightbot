@@ -1,0 +1,2625 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index b97fcdb..27bf19d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,15 @@
+ 
+ Format: [Keep a Changelog](https://keepachangelog.com/). Versions: [SemVer](https://semver.org/) (0.x = pre-beta).
+ 
++## [0.3.0]
++### Added
++- **Round trips by length of stay:** a trip step right after the destination: one way, round trip of 3/4/5/6/7/14 days, or exact dates on a calendar, plus a "direct only" toggle. The stay is part of the dedup signature (`watch_keys.stay_min/stay_max`, migration `0003`).
++- **Tap calendar** for exact dates (Monday-first, localized weekdays, past and out-of-range days disabled, month navigation). Typing a date still works. Return must be after departure and within 30 days.
++- `/search` and `/explore` support N-day round trips (results show departure → return dates; booking links are round-trip searches).
++### Changed
++- The old "⚙️ Details" step (round trip / direct) is replaced by the trip step. Typing exact dates moved into the calendar step.
++- Stay-based round trips cost 2 provider requests (both possible return months) and are charged 2 tokens by the shared rate limiter.
++
+ ## [0.2.1]
+ ### Changed
+ - The whole repository is now in English: code comments and docstrings, error and log messages, CLI/script output, configuration comments, tests, README and `docs/`. No behavior changed.
+diff --git a/README.md b/README.md
+index 2f58e35..cdfa9b9 100644
+--- a/README.md
++++ b/README.md
+@@ -5,7 +5,7 @@ Home-city departures, "cheapest day of the month" watches, and an "anywhere" sea
+ 
+ `Python 3.12` · `aiogram 3` · `PostgreSQL 16` · `Redis 7` · `SQLAlchemy 2 (async)` · `Alembic` · `Docker`
+ 
+-> **Status: v0.2.1, pre-beta.** The repository is currently private and proprietary (see [LICENSE](LICENSE)).
++> **Status: v0.3.0, pre-beta.** The repository is currently private and proprietary (see [LICENSE](LICENSE)).
+ > Choose a license before making it public, and read the note on the affiliate marker in [Configuration](#configuration).
+ > See the [CHANGELOG](CHANGELOG.md) and [`docs/LAUNCH_CHECKLIST.md`](docs/LAUNCH_CHECKLIST.md).
+ 
+@@ -15,8 +15,8 @@ Home-city departures, "cheapest day of the month" watches, and an "anywhere" sea
+ 
+ ## User experience
+ 
+-- **A watch in 3 taps:** `/new` → destination → month → target price. Origin defaults to the user's home city, one-way, direct-only off (a "⚙️ Details" button unlocks round trip and direct-only).
+-- **🌍 Anywhere:** pick a month and see the cheapest destinations worldwide from your home city; open one for a booking link or "notify me when cheaper".
++- **Round trips the way people search:** `/new` → destination → **trip** (one way · round trip of 3/4/5/6/7/14 days · exact dates on a tap calendar · direct-only toggle) → month → target price. Origin defaults to the user's home city.
++- **🌍 Anywhere:** pick one way or an N-day round trip and a month, and see the cheapest destinations worldwide from your home city; open one for a booking link or "notify me when cheaper".
+ - **The bot never goes silent:** typing "Istanbul" or "Baku Dubai" is enough, and anything it doesn't understand gets a reply with the menu.
+ - **Back / Cancel on every step**; messages are edited in place, so the chat doesn't grow.
+ - **Target-price help:** current price, 90-day median, a ⭐ recommended target, and a warning when the target is already met.
+@@ -57,9 +57,9 @@ Prometheus: `--profile monitoring`.
+ 
+ | Command | What it does |
+ |---|---|
+-| `/new` | New watch (destination → month → target) |
++| `/new` | New watch (destination → trip type / length of stay → month or calendar → target) |
+ | `/explore` | 🌍 Anywhere: the cheapest destinations for a chosen month |
+-| `/search` | The 5 cheapest days of a month for one route |
++| `/search` | The 5 cheapest options of a month for one route (one way or N-day round trip) |
+ | `/list` | Your watches: pause / resume / change target / delete |
+ | `/settings` | Language, currency, home city, quiet hours |
+ | `/delete` | Permanently delete all your data (with confirmation) |
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index ae4bc2f..b38e970 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -55,4 +55,6 @@ Telegram ──► bot (aiogram, polling/webhook) ──┐
+ - **Bot flow engine** (`bot/handlers/flow.py`): every step is its own FSM state; `step` and `history` live in the FSM data (the Back button). Callback transitions edit the message, and a "please wait" message is replaced in place by the result.
+ - **Explore:** `PriceProvider.explore()` → `CachedProvider` (1 hour, singleflight) → `RateLimitedProvider` → adapter. City names come from `PlaceNames` (static list + `cities.json`, cached in Redis for 7 days).
+ - **Quiet hours:** the poller writes the notification to the outbox with `available_at = deliver_after(...)` (`core/quiet.py`); the broadcaster is unchanged. `users.quiet_hours` (default on).
++- **Round trips by stay (v0.3):** `watch_keys.stay_min/stay_max` are part of the unique signature; the Travelpayouts adapter queries both return months
++  and filters by stay (`providers/base.py::filter_by_stay`); the bot flow is destination → trip → month/calendar → target.
+ - **Redis errors:** the poller delays the key 60 s (not counted as a failure), the broadcaster doesn't burn attempts, the throttle fails open.
+diff --git a/docs/DECISIONS.md b/docs/DECISIONS.md
+index 3e3ec36..13aecca 100644
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -47,6 +47,13 @@ Telegram requires Stars for digital goods (verify the official rules before laun
+ ## ADR-012: Quiet hours live in the poller, not in delivery
+ The notification is written to the outbox with `available_at`; the broadcaster is unchanged. Upside: the broadcaster stays simple and the queue-lag metric counts only notifications that are due. Downside: by the time it is delivered in the morning the price may have changed (the notification says so).
+ 
++## ADR-014: Length of stay is part of the dedup signature
++**Context:** most users search round trips ("a week in Istanbul"), not one-way tickets or an exact return month.
++**Decision:** a month watch can carry `stay_min/stay_max`. The provider fetches round trips for both possible return months
++(the return can spill into the next month) and keeps those whose stay is in range. The rate limiter charges 2 tokens.
++**Consequence:** (+) matches how people search; "7 days" watches are still deduplicated across users. (−) twice the provider requests
++for these keys, and different stays are different keys. Whether the Data API returns enough round-trip rows per month must be verified with a real token.
++
+ ## ADR-013: The repository is English; the bot UI is multilingual
+ **Context:** the repo is meant to become public eventually; the bot serves Azerbaijani, Russian and English users.
+ **Decision:** all code, comments, docs, scripts and logs are English. User-facing text lives only in the i18n catalogs (`bot/i18n/{az,ru,en}.py`) and the static city names (`core/places.py`). A test verifies key/placeholder parity across languages.
+diff --git a/docs/LAUNCH_CHECKLIST.md b/docs/LAUNCH_CHECKLIST.md
+index 8cfbe26..8ed3d9b 100644
+--- a/docs/LAUNCH_CHECKLIST.md
++++ b/docs/LAUNCH_CHECKLIST.md
+@@ -39,6 +39,7 @@ Everything in this project is tested against real Postgres/Redis, but the items
+ ## 6. Extra checks for v0.2 features
+ - [ ] **Marker:** does `794979` show up in the Travelpayouts dashboard as "Partner ID / marker" (not a referral-program code)? After a test click, does it appear in the statistics with its `sub_id`?
+ - [ ] **"Anywhere" (`explore`)**: with a real token, does the `prices_for_dates` request without `destination` and with `unique=true` return only the cheapest ticket per destination? (`providers/travelpayouts.py::explore`). If not, the request has to move to another endpoint.
++- [ ] **Round trips by stay (v0.3):** with a real token, does `prices_for_dates` with `one_way=false`, `departure_at=YYYY-MM`, `return_at=YYYY-MM` return enough rows for 3-14 day stays (we fetch 100 rows for both return months and filter)? If results are sparse, consider a ±1 day stay range (the model already supports it).
+ - [ ] **Name resolution:** is `https://api.travelpayouts.com/data/en/cities.json` open and does it return `code`, `name`, `country_code`? (Otherwise world cities show as codes; the system doesn't break.)
+ - [ ] **Quiet hours:** check once on a real phone at night that a notification is held until morning; set `QUIET_TZ` if your audience is in another time zone.
+ - [ ] **Target buttons:** is the −15% recommendation sensible on real price distributions? Look at user feedback and created targets and tune it (`bot/parsing.py::quick_targets`).
+diff --git a/docs/PRODUCT_SPEC.md b/docs/PRODUCT_SPEC.md
+index fdb48f8..d1e688d 100644
+--- a/docs/PRODUCT_SPEC.md
++++ b/docs/PRODUCT_SPEC.md
+@@ -3,7 +3,7 @@
+ **Audience:** people in Baku and the region looking for cheap flights. Languages: az (guessed from the Telegram language, default az), ru, en. Currencies: USD, AZN, EUR.
+ 
+ ## UX principles
+-1. The first watch takes under 60 seconds: the default flow is **3 taps** (destination → month → target).
++1. The first watch takes under 60 seconds: destination → trip → month → target (4 taps).
+ 2. Every message has a next step (a button). No dead ends.
+ 3. The bot never goes silent (off-flow text, unknown commands, stickers, stale buttons).
+ 4. Buttons over typing (mobile). Smart defaults: origin = home city, mode = by month, one-way.
+@@ -13,18 +13,20 @@
+ | Scenario | Status |
+ |---|---|
+ | `/start`: language is guessed, popular-destination buttons appear immediately (no language question) | ✅ |
+-| `/new`: destination → month → target (3 taps); "📅 Exact date" and "⚙️ Details" (round trip, direct) are optional | ✅ |
++| `/new`: destination → **trip** (one way · round trip 3/4/5/6/7/14 days · exact dates on a calendar · direct-only toggle) → month (or calendar) → target | ✅ (v0.3) |
++| Tap calendar for exact dates: past/out-of-range days disabled, month navigation, typing still works; return ≤ 30 days after departure | ✅ (v0.3) |
+ | Back / Cancel on every step; callback transitions edit the same message | ✅ |
+ | Target step: current price, 90-day median (if any), ⭐ recommended −15%, −10%, −25%; a warning when the target is already met | ✅ |
+ | After creating: current price, "➕ Another route", "📋 My watches" | ✅ |
+-| **🌍 Anywhere (`/explore`)**: month → the 10 cheapest destinations (flag, price) → detail (booking link + "notify me") | ✅ (the real response format needs verification) |
+-| `/search`: the 5 cheapest days of a month for a route → "notify me" | ✅ |
++| **🌍 Anywhere (`/explore`)**: trip (one way / N days) → month → the 10 cheapest destinations (flag, price) → detail (booking link + "notify me") | ✅ (the real response format needs verification) |
++| `/search`: trip (one way / N days) → month → the 5 cheapest options (departure → return) → "notify me" | ✅ |
+ | Fallback: typing "Istanbul", "Baku Dubai" or "GYD-IST" jumps straight to the month step | ✅ |
+ | `/list`: pause, resume, **change target**, delete | ✅ |
+ | Notification buttons: ⏸ Pause, 🎯 Change target, 👍/👎 | ✅ |
+ | `/settings`: language, currency, **home city**, **quiet hours** | ✅ |
+ | `/delete` | ✅ |
+ | "This weekend" quick pick | ❌ skipped: exact-date queries are sparse in the Data API cache; month mode is more reliable |
++| A flexible stay range (e.g. 5-7 days) | ⏳ supported by the data model (`stay_min`/`stay_max`), the UI offers exact N for now |
+ | "Next N days" mode | ❌ removed: it breaks the one-watch = one-API-request rule ("by month" replaces it) |
+ 
+ ## Notification rules (all in `core/alert_engine.py`, covered by tests)
+diff --git a/migrations/versions/0003_watch_key_stay.py b/migrations/versions/0003_watch_key_stay.py
+new file mode 100644
+index 0000000..991c6a7
+--- /dev/null
++++ b/migrations/versions/0003_watch_key_stay.py
+@@ -0,0 +1,45 @@
++"""watch_keys.stay_min / stay_max: round trips by month with a length of stay
++
++Revision ID: 0003
++Revises: 0002
++"""
++
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0003"
++down_revision = "0002"
++branch_labels = None
++depends_on = None
++
++_OLD_COLS = ["origin", "destination", "date_mode", "depart_date", "return_date", "direct_only", "currency"]
++
++
++def upgrade() -> None:
++    op.add_column("watch_keys", sa.Column("stay_min", sa.SmallInteger(), nullable=True))
++    op.add_column("watch_keys", sa.Column("stay_max", sa.SmallInteger(), nullable=True))
++    op.create_check_constraint(
++        "ck_watch_keys_stay_range",
++        "watch_keys",
++        "(stay_min IS NULL AND stay_max IS NULL) OR "
++        "(stay_min BETWEEN 1 AND 30 AND stay_max BETWEEN stay_min AND 30)",
++    )
++    # The stay is part of the dedup signature: "7 days" and "14 days" are different provider queries.
++    op.drop_constraint("uq_watch_keys_signature", "watch_keys", type_="unique")
++    op.create_unique_constraint(
++        "uq_watch_keys_signature",
++        "watch_keys",
++        [*_OLD_COLS, "stay_min", "stay_max"],
++        postgresql_nulls_not_distinct=True,
++    )
++
++
++def downgrade() -> None:
++    op.execute("DELETE FROM watch_keys WHERE stay_min IS NOT NULL")
++    op.drop_constraint("uq_watch_keys_signature", "watch_keys", type_="unique")
++    op.create_unique_constraint(
++        "uq_watch_keys_signature", "watch_keys", _OLD_COLS, postgresql_nulls_not_distinct=True
++    )
++    op.drop_constraint("ck_watch_keys_stay_range", "watch_keys", type_="check")
++    op.drop_column("watch_keys", "stay_max")
++    op.drop_column("watch_keys", "stay_min")
+diff --git a/pyproject.toml b/pyproject.toml
+index 500f065..89eccb1 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "flightbot"
+-version = "0.2.1"
++version = "0.3.0"
+ description = "Telegram flight price tracking platform (watch-key dedup, transactional outbox, rate-limited broadcaster)"
+ requires-python = ">=3.12"
+ dependencies = [
+diff --git a/src/flightbot/__init__.py b/src/flightbot/__init__.py
+index 94464e9..0e87840 100644
+--- a/src/flightbot/__init__.py
++++ b/src/flightbot/__init__.py
+@@ -1,3 +1,3 @@
+ """FlightBot: a Telegram flight price tracking platform."""
+ 
+-__version__ = "0.2.1"
++__version__ = "0.3.0"
+diff --git a/src/flightbot/bot/calendar_kb.py b/src/flightbot/bot/calendar_kb.py
+new file mode 100644
+index 0000000..2904621
+--- /dev/null
++++ b/src/flightbot/bot/calendar_kb.py
+@@ -0,0 +1,74 @@
++"""Inline calendar for picking dates with taps instead of typing (Monday-first, localized)."""
++
++import calendar as _calendar
++from datetime import date
++
++from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
++
++from flightbot.bot.callbacks import CalCb
++from flightbot.bot.i18n import fmt_month, t
++from flightbot.providers.base import next_month
++
++FILLER = "·"
++
++
++def prev_month(d: date) -> date:
++    return date(d.year - 1, 12, 1) if d.month == 1 else date(d.year, d.month - 1, 1)
++
++
++def _noop(which: str, text: str = FILLER) -> InlineKeyboardButton:
++    return InlineKeyboardButton(text=text, callback_data=CalCb(which=which, action="noop", v="").pack())
++
++
++def calendar_rows(
++    which: str, month: date, lang: str, *, min_day: date, max_day: date
++) -> list[list[InlineKeyboardButton]]:
++    """Header with month navigation, weekday row, and the days of `month`. Days outside
++    [min_day, max_day] are shown as a dot and cannot be picked."""
++    month = month.replace(day=1)
++    can_prev = month > min_day.replace(day=1)
++    can_next = month < max_day.replace(day=1)
++    header = [
++        InlineKeyboardButton(
++            text="‹", callback_data=CalCb(which=which, action="nav", v=f"{prev_month(month):%Y%m}").pack()
++        )
++        if can_prev
++        else _noop(which),
++        _noop(which, fmt_month(month, lang)),
++        InlineKeyboardButton(
++            text="›", callback_data=CalCb(which=which, action="nav", v=f"{next_month(month):%Y%m}").pack()
++        )
++        if can_next
++        else _noop(which),
++    ]
++    rows = [header, [_noop(which, w) for w in t(lang, "cal.weekdays").split(",")]]
++    for week in _calendar.Calendar(firstweekday=0).monthdayscalendar(month.year, month.month):
++        row = []
++        for day in week:
++            if day == 0:
++                row.append(_noop(which))
++                continue
++            d = date(month.year, month.month, day)
++            if min_day <= d <= max_day:
++                row.append(
++                    InlineKeyboardButton(
++                        text=str(day), callback_data=CalCb(which=which, action="pick", v=f"{d:%Y%m%d}").pack()
++                    )
++                )
++            else:
++                row.append(_noop(which))
++        rows.append(row)
++    return rows
++
++
++def clamp_month(month: date, min_day: date, max_day: date) -> date:
++    month = month.replace(day=1)
++    return max(min_day.replace(day=1), min(month, max_day.replace(day=1)))
++
++
++def calendar_kb(
++    which: str, month: date, lang: str, *, min_day: date, max_day: date, nav_row
++) -> InlineKeyboardMarkup:
++    return InlineKeyboardMarkup(
++        inline_keyboard=[*calendar_rows(which, month, lang, min_day=min_day, max_day=max_day), nav_row]
++    )
+diff --git a/src/flightbot/bot/callbacks.py b/src/flightbot/bot/callbacks.py
+index 8c42e05..2b88215 100644
+--- a/src/flightbot/bot/callbacks.py
++++ b/src/flightbot/bot/callbacks.py
+@@ -12,11 +12,14 @@ class MonthCb(CallbackData, prefix="mo"):
+ 
+ 
+ class TripCb(CallbackData, prefix="tr"):
+-    round_trip: int
++    kind: str  # 'oneway' | 'stay' | 'dates'
++    n: int = 0  # length of stay in days (kind == 'stay')
+ 
+ 
+-class DirectCb(CallbackData, prefix="dr"):
+-    direct: int
++class CalCb(CallbackData, prefix="cal"):
++    which: str  # 'dep' | 'ret'
++    action: str  # 'pick' | 'nav' | 'noop'
++    v: str  # YYYYMMDD for pick, YYYYMM for nav, empty for noop
+ 
+ 
+ class TargetCb(CallbackData, prefix="tg"):
+@@ -38,7 +41,7 @@ class NavCb(CallbackData, prefix="nv"):
+ 
+ 
+ class GoCb(CallbackData, prefix="go"):
+-    to: str  # 'origin' | 'exact' | 'advanced' | 'explore' | 'watch' | 'retarget' | 'sethome'
++    to: str  # 'origin' | 'exact' | 'direct' | 'explore' | 'watch' | 'retarget' | 'sethome'
+ 
+ 
+ class ExploreCb(CallbackData, prefix="xp"):
+diff --git a/src/flightbot/bot/formatting.py b/src/flightbot/bot/formatting.py
+index 2a7b749..b3ed9e0 100644
+--- a/src/flightbot/bot/formatting.py
++++ b/src/flightbot/bot/formatting.py
+@@ -13,9 +13,14 @@ def describe_key(k: Any, lang: str) -> tuple[str, str, str]:
+     fmt = fmt_month if month_mode else fmt_date
+     dates = fmt(k.depart_date, lang)
+     flags: list[str] = []
++    stay_min = getattr(k, "stay_min", None)
+     if k.return_date:
+         dates = f"{dates} → {fmt(k.return_date, lang)}"
+         flags.append(t(lang, "flag.round"))
++    elif stay_min is not None:
++        stay_max = getattr(k, "stay_max", stay_min)
++        flags.append(t(lang, "flag.round"))
++        flags.append(t(lang, "flag.stay", n=stay_min if stay_min == stay_max else f"{stay_min}-{stay_max}"))
+     if k.direct_only:
+         flags.append(t(lang, "flag.direct"))
+     return route, dates, "".join(f" · {f}" for f in flags)
+diff --git a/src/flightbot/bot/handlers/flow.py b/src/flightbot/bot/handlers/flow.py
+index 0f79586..cf811ea 100644
+--- a/src/flightbot/bot/handlers/flow.py
++++ b/src/flightbot/bot/handlers/flow.py
+@@ -1,13 +1,14 @@
+ """Flow engine: the shared step system for /new, /search and /explore.
+ 
+-Goal: the default watch takes 3 touches (destination -> month -> target price). Origin = home city, one-way,
+-"direct only" is off. Every step has "Back" and "Cancel". Transitions triggered by a callback edit the existing message.
++Steps: destination -> trip (one way / round trip of N days / exact dates on a calendar) -> month or calendar
++-> target price. Origin = home city. Every step has "Back" and "Cancel". Transitions triggered by a callback
++edit the existing message.
+ """
+ 
+ import asyncio
+ from collections.abc import Callable
+ from dataclasses import dataclass
+-from datetime import date
++from datetime import date, timedelta
+ from decimal import Decimal
+ 
+ from aiogram import F, Router
+@@ -17,8 +18,9 @@ from aiogram.types import CallbackQuery, Message
+ from sqlalchemy.ext.asyncio import AsyncSession
+ 
+ from flightbot.bot import keyboards as kb
++from flightbot.bot.calendar_kb import calendar_kb, clamp_month
+ from flightbot.bot.callbacks import (
+-    DirectCb,
++    CalCb,
+     ExploreCb,
+     GoCb,
+     MenuCb,
+@@ -30,7 +32,7 @@ from flightbot.bot.callbacks import (
+ )
+ from flightbot.bot.deps import Deps
+ from flightbot.bot.formatting import describe_key
+-from flightbot.bot.i18n import esc, fmt_date, fmt_month, fmt_price
++from flightbot.bot.i18n import esc, fmt_date, fmt_month, fmt_price, t
+ from flightbot.bot.parsing import next_months, parse_month_token, parse_price, parse_user_date
+ from flightbot.bot.render import route_title, stops_text
+ from flightbot.bot.states import Flow
+@@ -41,7 +43,7 @@ from flightbot.core.places import flag_emoji, place_name
+ from flightbot.core.plans import effective_plan, limits_for
+ from flightbot.core.stats import key_price_stats
+ from flightbot.core.users import set_home
+-from flightbot.core.watch_key import MAX_HORIZON_DAYS, InvalidWatch, WatchKey
++from flightbot.core.watch_key import MAX_HORIZON_DAYS, MAX_STAY_DAYS, InvalidWatch, WatchKey
+ from flightbot.core.watches import QuotaExceeded, count_active, create_or_update_watch
+ from flightbot.db.models import User
+ from flightbot.logging import get_logger
+@@ -59,11 +61,10 @@ EXPLORE_ITEMS = 10
+ STEP_STATE = {
+     "dest": Flow.dest,
+     "origin": Flow.origin,
+-    "when": Flow.when,
+-    "date": Flow.date,
+     "trip": Flow.trip,
+-    "ret": Flow.ret,
+-    "direct": Flow.direct,
++    "when": Flow.when,
++    "cal_dep": Flow.cal_dep,
++    "cal_ret": Flow.cal_ret,
+     "target": Flow.target,
+     "x_when": Flow.x_when,
+     "x_list": Flow.x_list,
+@@ -101,15 +102,39 @@ def _origin(d: dict, c: Ctx) -> str:
+     return d.get("origin") or c.user.home_iata or c.deps.settings.default_home_iata
+ 
+ 
++def _trip_label(d: dict, lang: str) -> str:
++    trip = d.get("trip") or "oneway"
++    if trip == "stay":
++        return t(lang, "trip.stay", n=d["stay"])
++    if trip == "dates":
++        return t(lang, "trip.dates")
++    return t(lang, "trip.oneway")
++
++
++def _route(d: dict, c: Ctx) -> str:
++    origin = _origin(d, c)
++    if d.get("destination"):
++        return route_title(origin, d["destination"], c.lang)
++    return f"{place_name(origin, c.lang)} → {t(c.lang, 'explore.anywhere')}"
++
++
++def _stay(d: dict) -> int | None:
++    return d.get("stay") if d.get("trip") == "stay" else None
++
++
+ def _build_key(d: dict, user: User) -> WatchKey:
++    stay = _stay(d)
++    ret = d.get("ret") if d.get("trip") == "dates" else None
+     return WatchKey.create(
+         origin=d["origin"],
+         destination=d["destination"],
+         date_mode=d.get("mode", "month"),
+         depart_date=date.fromisoformat(d["depart"]),
+-        return_date=date.fromisoformat(d["ret"]) if d.get("ret") else None,
++        return_date=date.fromisoformat(ret) if ret else None,
+         direct_only=bool(d.get("direct")),
+         currency=user.currency,
++        stay_min=stay,
++        stay_max=stay,
+         today=_today(),
+     )
+ 
+@@ -124,6 +149,10 @@ def _date_error(d: date, today: date, not_before: date | None = None) -> str | N
+     return None
+ 
+ 
++def _dates_label(depart: date, ret: date | None, lang: str) -> str:
++    return f"{fmt_date(depart, lang)} → {fmt_date(ret, lang)}" if ret else fmt_date(depart, lang)
++
++
+ # ================================================================== step engine
+ async def goto(c: Ctx, step: str, *, push: bool = True, text: str | None = None) -> None:
+     d = await c.state.get_data()
+@@ -157,48 +186,63 @@ async def render(c: Ctx, step: str, text: str | None = None) -> None:
+     has_history = bool(d.get("history"))
+ 
+     if step == "dest":
+-        await show(
+-            c.target,
++        await c.show(
+             text or tr("step.dest", origin=esc(place_name(origin, lang))),
+             kb.dest_kb(origin, lang, explore=purpose == "watch"),
+         )
+     elif step == "origin":
+         await c.show(tr("step.origin"), kb.origin_kb(c.user.home_iata, origin, lang, back=has_history))
+-    elif step == "when":
+-        route = esc(route_title(origin, d["destination"], lang))
+-        simple = purpose == "search"
+-        body = f"<b>{route}</b>\n\n{tr('search.ask_month')}" if simple else tr("step.when", route=route)
+-        await show(
+-            c.target,
+-            body,
+-            kb.when_kb(next_months(today, MONTH_GRID), lang, simple=simple, advanced=bool(d.get("advanced"))),
++    elif step == "trip":
++        await c.show(
++            text or tr("step.trip", route=esc(_route(d, c))),
++            kb.trip_kb(
++                lang,
++                direct=bool(d.get("direct")),
++                calendar=purpose == "watch",
++                back=has_history,
++                origin=origin if purpose == "explore" else None,
++            ),
+         )
++    elif step == "when":
++        route, trip = esc(_route(d, c)), _trip_label(d, lang)
++        if purpose == "search":
++            body = f"<b>{route}</b> · {trip}\n\n{tr('search.ask_month')}"
++        else:
++            body = tr("step.when", route=route, trip=trip)
++        exact = purpose == "watch" and (d.get("trip") or "oneway") == "oneway"
++        await c.show(body, kb.when_kb(next_months(today, MONTH_GRID), lang, exact=exact))
+     elif step == "x_when":
+-        await show(
+-            c.target,
+-            tr("explore.ask_month", origin=esc(place_name(origin, lang))),
+-            kb.explore_months_kb(next_months(today, MONTH_GRID), origin, lang, back=has_history),
++        await c.show(
++            tr("explore.ask_month", origin=esc(place_name(origin, lang)), trip=_trip_label(d, lang)),
++            kb.explore_months_kb(next_months(today, MONTH_GRID), lang),
++        )
++    elif step == "cal_dep":
++        min_day, max_day = today, today + timedelta(days=MAX_HORIZON_DAYS)
++        month = clamp_month(date.fromisoformat(d.get("cal_month") or today.isoformat()), min_day, max_day)
++        await c.show(
++            tr("step.cal_dep", route=esc(_route(d, c)), trip=_trip_label(d, lang)),
++            calendar_kb("dep", month, lang, min_day=min_day, max_day=max_day, nav_row=kb.nav_row(lang)),
++        )
++    elif step == "cal_ret":
++        depart = date.fromisoformat(d["depart"])
++        min_day = depart + timedelta(days=1)
++        max_day = min(depart + timedelta(days=MAX_STAY_DAYS), today + timedelta(days=MAX_HORIZON_DAYS))
++        month = clamp_month(date.fromisoformat(d.get("cal_month") or depart.isoformat()), min_day, max_day)
++        await c.show(
++            tr("step.cal_ret", route=esc(_route(d, c)), date=fmt_date(depart, lang)),
++            calendar_kb("ret", month, lang, min_day=min_day, max_day=max_day, nav_row=kb.nav_row(lang)),
+         )
+-    elif step == "date":
+-        await c.show(tr("step.date"), kb.nav_only_kb(lang))
+-    elif step == "trip":
+-        await c.show(tr("step.trip"), kb.trip_kb(lang))
+-    elif step == "ret":
+-        if d.get("mode") == "exact":
+-            await c.show(tr("step.ret_date"), kb.nav_only_kb(lang))
+-        else:
+-            depart_month = date.fromisoformat(d["depart"])
+-            months = [m for m in next_months(today, 12) if m >= depart_month][:MONTH_GRID]
+-            await c.show(tr("step.ret_month"), kb.ret_months_kb(months, lang))
+-    elif step == "direct":
+-        await c.show(tr("step.direct"), kb.direct_kb(lang))
+     elif step == "target":
+         await render_target(c)
+     elif step == "x_list":
+         month = date.fromisoformat(d["explore_month"])
+-        await show(
+-            c.target,
+-            tr("explore.header", origin=esc(place_name(origin, lang)), month=fmt_month(month, lang)),
++        await c.show(
++            tr(
++                "explore.header",
++                origin=esc(place_name(origin, lang)),
++                month=fmt_month(month, lang),
++                trip=_trip_label(d, lang),
++            ),
+             kb.explore_list_kb(d["explore"], lang),
+         )
+     elif step == "x_detail":
+@@ -231,14 +275,10 @@ async def begin(
+             )
+             return
+     origin = origin or user.home_iata or deps.settings.default_home_iata
+-    await state.update_data(purpose=purpose, origin=origin, history=[], step=None)
++    await state.update_data(purpose=purpose, origin=origin, history=[], step=None, direct=False)
+     if destination:
+         await state.update_data(destination=destination)
+-        first = "when"
+-    elif purpose == "explore":
+-        first = "x_when"
+-    else:
+-        first = "dest"
++    first = "trip" if destination or purpose == "explore" else "dest"
+     await goto(c, first, push=False, text=text)
+ 
+ 
+@@ -282,7 +322,7 @@ async def menu_start(
+     await begin(cb, state, user, session, tr, deps, purpose)
+ 
+ 
+-# ========================================================================= naviqasiya
++# ===================================================================== navigation
+ @router.callback_query(NavCb.filter(F.action == "back"))
+ async def on_back(
+     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
+@@ -346,7 +386,7 @@ async def pick_destination(
+         return
+     await cb.answer()
+     await state.update_data(destination=callback_data.code, hint_price=None)
+-    await goto(_ctx(cb, state, user, session, tr, deps), "when")
++    await goto(_ctx(cb, state, user, session, tr, deps), "trip")
+ 
+ 
+ @router.callback_query(PlaceCb.filter(F.role == "o"), Flow.origin)
+@@ -373,7 +413,7 @@ async def pick_origin(
+         await goto(c, "dest", push=False)
+ 
+ 
+-@router.callback_query(GoCb.filter(F.to == "origin"), StateFilter(Flow.dest, Flow.x_when))
++@router.callback_query(GoCb.filter(F.to == "origin"), StateFilter(Flow.dest, Flow.trip))
+ async def go_origin(
+     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
+ ) -> None:
+@@ -396,21 +436,52 @@ async def go_explore(
+     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
+ ) -> None:
+     await cb.answer()
+-    await state.update_data(purpose="explore")
+-    await goto(_ctx(cb, state, user, session, tr, deps), "x_when")
++    await state.update_data(purpose="explore", destination=None)
++    await goto(_ctx(cb, state, user, session, tr, deps), "trip")
+ 
+ 
+-# ================================================================ month / date selection
+-async def _after_when(c: Ctx) -> None:
+-    """The date is settled: if "details" is on, ask trip type/direct; otherwise go straight to the target price."""
+-    d = await c.state.get_data()
+-    if d.get("advanced"):
+-        await goto(c, "trip")
++# ======================================================================== trip type
++@router.callback_query(GoCb.filter(F.to == "direct"), Flow.trip)
++async def toggle_direct(
++    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
++) -> None:
++    await cb.answer()
++    d = await state.get_data()
++    await state.update_data(direct=not d.get("direct"))
++    await render(_ctx(cb, state, user, session, tr, deps), "trip")
++
++
++@router.callback_query(TripCb.filter(), Flow.trip)
++async def pick_trip(
++    cb: CallbackQuery,
++    callback_data: TripCb,
++    state: FSMContext,
++    user: User,
++    session: AsyncSession,
++    tr,
++    deps: Deps,
++) -> None:
++    kind = callback_data.kind
++    if kind not in ("oneway", "stay", "dates") or (
++        kind == "stay" and not 1 <= callback_data.n <= MAX_STAY_DAYS
++    ):
++        await cb.answer(tr("error.stale"), show_alert=True)
++        return
++    await cb.answer()
++    await state.update_data(
++        trip=kind, stay=callback_data.n if kind == "stay" else None, ret=None, hint_price=None, cal_month=None
++    )
++    c = _ctx(cb, state, user, session, tr, deps)
++    d = await state.get_data()
++    if d.get("purpose") == "explore":
++        await goto(c, "x_when")
++    elif kind == "dates":
++        await goto(c, "cal_dep")
+     else:
+-        await c.state.update_data(ret=None, direct=False)
+-        await goto(c, "target")
++        await goto(c, "when")
+ 
+ 
++# ================================================================ month / calendar
+ @router.callback_query(MonthCb.filter(F.which == "dep"), Flow.when)
+ async def pick_month(
+     cb: CallbackQuery,
+@@ -432,7 +503,7 @@ async def pick_month(
+     if d.get("purpose") == "search":
+         await run_search(c)
+     else:
+-        await _after_when(c)
++        await goto(c, "target")
+ 
+ 
+ @router.callback_query(GoCb.filter(F.to == "exact"), Flow.when)
+@@ -440,108 +511,86 @@ async def go_exact(
+     cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
+ ) -> None:
+     await cb.answer()
+-    await state.update_data(mode="exact", hint_price=None)
+-    await goto(_ctx(cb, state, user, session, tr, deps), "date")
+-
+-
+-@router.callback_query(GoCb.filter(F.to == "advanced"), Flow.when)
+-async def go_advanced(
+-    cb: CallbackQuery, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
+-) -> None:
+-    await cb.answer()
+-    d = await state.get_data()
+-    await state.update_data(advanced=not d.get("advanced"))
+-    await render(_ctx(cb, state, user, session, tr, deps), "when")
++    await state.update_data(hint_price=None, cal_month=None)
++    await goto(_ctx(cb, state, user, session, tr, deps), "cal_dep")
+ 
+ 
+-@router.message(Flow.date, *TEXT_INPUT)
+-async def date_text(
+-    message: Message, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
+-) -> None:
++async def _apply_date(c: Ctx, which: str, picked: date) -> str | None:
++    """Store a picked/typed date and move on. Returns an error code (i18n key suffix) or None."""
+     today = _today()
+-    d = parse_user_date(message.text or "", today)
+-    if d is None:
+-        await message.answer(tr("new.bad_date"), reply_markup=kb.nav_only_kb(user.language))
+-        return
+-    if err := _date_error(d, today):
+-        await message.answer(tr(f"invalid.{err}"), reply_markup=kb.nav_only_kb(user.language))
+-        return
+-    await state.update_data(depart=d.isoformat(), mode="exact", hint_price=None)
+-    await _after_when(_ctx(message, state, user, session, tr, deps))
++    d = await c.state.get_data()
++    if which == "dep":
++        if err := _date_error(picked, today):
++            return err
++        await c.state.update_data(depart=picked.isoformat(), mode="exact", hint_price=None, cal_month=None)
++        if d.get("trip") == "dates":
++            await c.state.update_data(cal_month=picked.replace(day=1).isoformat())
++            await goto(c, "cal_ret")
++        else:
++            await goto(c, "target")
++        return None
++    depart = date.fromisoformat(d["depart"])
++    if picked <= depart:
++        return "return_before_depart"
++    if (picked - depart).days > MAX_STAY_DAYS:
++        return "bad_stay"
++    if err := _date_error(picked, today):
++        return err
++    await c.state.update_data(ret=picked.isoformat(), hint_price=None)
++    await goto(c, "target")
++    return None
+ 
+ 
+-@router.callback_query(TripCb.filter(), Flow.trip)
+-async def pick_trip(
++@router.callback_query(CalCb.filter(), StateFilter(Flow.cal_dep, Flow.cal_ret))
++async def on_calendar(
+     cb: CallbackQuery,
+-    callback_data: TripCb,
++    callback_data: CalCb,
+     state: FSMContext,
+     user: User,
+     session: AsyncSession,
+     tr,
+     deps: Deps,
+ ) -> None:
+-    await cb.answer()
++    current = await state.get_state()
++    expected = "dep" if current == Flow.cal_dep.state else "ret"
++    if callback_data.which != expected:
++        await cb.answer(tr("error.stale"), show_alert=True)
++        return
+     c = _ctx(cb, state, user, session, tr, deps)
+-    if callback_data.round_trip:
+-        await goto(c, "ret")
+-    else:
+-        await state.update_data(ret=None)
+-        await goto(c, "direct")
+-
+-
+-@router.message(Flow.ret, *TEXT_INPUT)
+-async def return_text(
+-    message: Message, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
+-) -> None:
+-    d = await state.get_data()
+-    if d.get("mode") != "exact":
+-        await message.answer(tr("step.ret_month"), reply_markup=kb.nav_only_kb(user.language))
++    if callback_data.action == "noop":
++        await cb.answer()
+         return
+-    today = _today()
+-    parsed = parse_user_date(message.text or "", today)
+-    if parsed is None:
+-        await message.answer(tr("new.bad_date"), reply_markup=kb.nav_only_kb(user.language))
++    if callback_data.action == "nav":
++        month = parse_month_token(f"{callback_data.v[:4]}-{callback_data.v[4:]}")
++        if month is None:
++            await cb.answer(tr("error.stale"), show_alert=True)
++            return
++        await cb.answer()
++        await state.update_data(cal_month=month.isoformat())
++        await render(c, "cal_dep" if expected == "dep" else "cal_ret")
+         return
+-    if err := _date_error(parsed, today, not_before=date.fromisoformat(d["depart"])):
+-        await message.answer(tr(f"invalid.{err}"), reply_markup=kb.nav_only_kb(user.language))
++    try:
++        v = callback_data.v
++        picked = date(int(v[:4]), int(v[4:6]), int(v[6:8]))
++    except ValueError:
++        await cb.answer(tr("error.stale"), show_alert=True)
+         return
+-    await state.update_data(ret=parsed.isoformat())
+-    await goto(_ctx(message, state, user, session, tr, deps), "direct")
++    err = await _apply_date(c, expected, picked)
++    await cb.answer(tr(f"invalid.{err}") if err else None, show_alert=bool(err))
+ 
+ 
+-@router.callback_query(MonthCb.filter(F.which == "ret"), Flow.ret)
+-async def pick_return_month(
+-    cb: CallbackQuery,
+-    callback_data: MonthCb,
+-    state: FSMContext,
+-    user: User,
+-    session: AsyncSession,
+-    tr,
+-    deps: Deps,
++@router.message(StateFilter(Flow.cal_dep, Flow.cal_ret), *TEXT_INPUT)
++async def calendar_text(
++    message: Message, state: FSMContext, user: User, session: AsyncSession, tr, deps: Deps
+ ) -> None:
+-    month = parse_month_token(callback_data.ym)
+-    d = await state.get_data()
+-    if month is None or month < date.fromisoformat(d["depart"]):
+-        await cb.answer(tr("invalid.return_before_depart"), show_alert=True)
++    picked = parse_user_date(message.text or "", _today())
++    if picked is None:
++        await message.answer(tr("new.bad_date"), reply_markup=kb.nav_only_kb(user.language))
+         return
+-    await cb.answer()
+-    await state.update_data(ret=month.isoformat())
+-    await goto(_ctx(cb, state, user, session, tr, deps), "direct")
+-
+-
+-@router.callback_query(DirectCb.filter(), Flow.direct)
+-async def pick_direct(
+-    cb: CallbackQuery,
+-    callback_data: DirectCb,
+-    state: FSMContext,
+-    user: User,
+-    session: AsyncSession,
+-    tr,
+-    deps: Deps,
+-) -> None:
+-    await cb.answer()
+-    await state.update_data(direct=bool(callback_data.direct))
+-    await goto(_ctx(cb, state, user, session, tr, deps), "target")
++    which = "dep" if await state.get_state() == Flow.cal_dep.state else "ret"
++    err = await _apply_date(_ctx(message, state, user, session, tr, deps), which, picked)
++    if err:
++        await message.answer(tr(f"invalid.{err}"), reply_markup=kb.nav_only_kb(user.language))
+ 
+ 
+ # ===================================================================== target price
+@@ -579,9 +628,11 @@ async def render_target(c: Ctx) -> None:
+     ]
+     if stats.reliable and stats.median is not None:
+         info.append(c.tr("target.median", median=fmt_price(stats.median), currency=cur))
+-    route, dates, _flags = describe_key(key, c.lang)
++    route, dates, flags = describe_key(key, c.lang)
+     await c.state.update_data(current_price=str(current) if current is not None else None)
+-    text = c.tr("step.target", route=esc(route), dates=dates, info="\n".join(info) + "\n", currency=cur)
++    text = c.tr(
++        "step.target", route=esc(route), dates=dates + flags, info="\n".join(info) + "\n", currency=cur
++    )
+     await c.show(text, kb.target_kb(current, c.lang))
+ 
+ 
+@@ -628,7 +679,7 @@ async def handle_target(c: Ctx, price: Decimal, *, force: bool) -> None:
+     if not force and current is not None and price >= current:
+         # The price is already below the target: a notification would fire immediately. The user must choose this knowingly.
+         text = c.tr("target.already", current=fmt_price(current), currency=c.user.currency)
+-        await c.show(text, kb.target_warning_kb(int(price * 100), c.lang))
++        await show(c.target, text, kb.target_warning_kb(int(price * 100), c.lang))
+         return
+     await finish_watch(c, price, current)
+ 
+@@ -639,7 +690,7 @@ async def finish_watch(c: Ctx, price: Decimal, current: Decimal | None) -> None:
+         key = _build_key(d, c.user)
+     except (InvalidWatch, KeyError) as exc:
+         code = getattr(exc, "code", None)
+-        await c.show(c.tr(f"invalid.{code}") if code else c.tr("new.state_lost"), kb.menu_kb(c.lang))
++        await show(c.target, c.tr(f"invalid.{code}") if code else c.tr("new.state_lost"), kb.menu_kb(c.lang))
+         await c.state.clear()
+         return
+     try:
+@@ -647,7 +698,7 @@ async def finish_watch(c: Ctx, price: Decimal, current: Decimal | None) -> None:
+             c.session, user_id=c.user.id, key=key, target_price=price, now=utcnow()
+         )
+     except QuotaExceeded as exc:
+-        await c.show(c.tr(f"quota.{exc.code}", limit=exc.limit), kb.menu_kb(c.lang))
++        await show(c.target, c.tr(f"quota.{exc.code}", limit=exc.limit), kb.menu_kb(c.lang))
+         await c.state.clear()
+         return
+     route, dates, flags = describe_key(key, c.lang)
+@@ -676,20 +727,23 @@ async def finish_watch(c: Ctx, price: Decimal, current: Decimal | None) -> None:
+ async def run_search(c: Ctx) -> None:
+     d = await c.state.get_data()
+     try:
++        stay = _stay(d)
+         key = WatchKey.create(
+             origin=d["origin"],
+             destination=d["destination"],
+             date_mode="month",
+             depart_date=date.fromisoformat(d["depart"]),
++            direct_only=bool(d.get("direct")),
+             currency=c.user.currency,
++            stay_min=stay,
++            stay_max=stay,
+             today=_today(),
+         )
+     except (InvalidWatch, KeyError):
+         await c.show(c.tr("new.state_lost"), kb.menu_kb(c.lang))
+         await c.state.clear()
+         return
+-    waiting = await c.show(c.tr("search.searching"))
+-    c.edit_msg = waiting
++    c.edit_msg = await c.show(c.tr("search.searching"))
+     try:
+         offers = await asyncio.wait_for(c.deps.provider.offers(key), PROVIDER_TIMEOUT_S + 5)
+     except Exception as exc:  # noqa: BLE001
+@@ -699,14 +753,16 @@ async def run_search(c: Ctx) -> None:
+     if not offers:
+         await c.show(c.tr("search.none"), kb.nav_only_kb(c.lang))
+         return
+-    best: dict[date, PriceQuote] = {}
++    best: dict[tuple, PriceQuote] = {}
+     for q in offers:
+-        if q.depart_date not in best or q.price < best[q.depart_date].price:
+-            best[q.depart_date] = q
++        sig = (q.depart_date, q.return_date)
++        if sig not in best or q.price < best[sig].price:
++            best[sig] = q
+     top = sorted(best.values(), key=lambda q: q.price)[:5]
+     items = [
+         {
+             "date": q.depart_date.isoformat(),
++            "ret": q.return_date.isoformat() if q.return_date else None,
+             "price": str(q.price),
+             "currency": q.currency,
+             "transfers": q.transfers,
+@@ -719,19 +775,19 @@ async def run_search(c: Ctx) -> None:
+ 
+ 
+ async def render_search_result(c: Ctx, d: dict, origin: str) -> None:
+-    key_route = esc(route_title(origin, d["destination"], c.lang))
+     month = fmt_month(date.fromisoformat(d["depart"]), c.lang)
+-    lines = [c.tr("search.header", route=key_route, month=month)]
++    lines = [c.tr("search.header", route=esc(_route(d, c)), month=month, trip=_trip_label(d, c.lang))]
+     for it in d["search"]:
+         parts = [
+             p
+             for p in (stops_text(c.lang, it["transfers"]), esc(it["airline"]) if it["airline"] else None)
+             if p
+         ]
++        ret = date.fromisoformat(it["ret"]) if it.get("ret") else None
+         lines.append(
+             c.tr(
+                 "search.line",
+-                date=fmt_date(date.fromisoformat(it["date"]), c.lang),
++                date=_dates_label(date.fromisoformat(it["date"]), ret, c.lang),
+                 price=fmt_price(it["price"]),
+                 currency=it["currency"],
+                 details=" · ".join(parts) or "—",
+@@ -760,11 +816,17 @@ async def pick_explore_month(
+     c = _ctx(cb, state, user, session, tr, deps)
+     d = await state.get_data()
+     origin = _origin(d, c)
++    stay = _stay(d)
+     c.edit_msg = await show(cb, tr("explore.looking"))
+     try:
+         quotes = await asyncio.wait_for(
+             deps.provider.explore(
+-                origin=origin, month=month, currency=user.currency, limit=EXPLORE_ITEMS * 2
++                origin=origin,
++                month=month,
++                currency=user.currency,
++                direct_only=bool(d.get("direct")),
++                limit=EXPLORE_ITEMS * 2,
++                stay=(stay, stay) if stay else None,
+             ),
+             EXPLORE_TIMEOUT_S,
+         )
+@@ -787,6 +849,7 @@ async def pick_explore_month(
+                 "price": str(q.price),
+                 "currency": q.currency,
+                 "depart": q.depart_date.isoformat(),
++                "ret": q.return_date.isoformat() if q.return_date else None,
+                 "transfers": q.transfers,
+                 "airline": q.airline,
+                 "link": q.link,
+@@ -818,8 +881,6 @@ async def pick_explore_item(
+         destination=it["code"],
+         depart=d["explore_month"],
+         mode="month",
+-        ret=None,
+-        direct=False,
+         hint_price=it["price"],
+     )
+     await goto(_ctx(cb, state, user, session, tr, deps), "x_detail")
+@@ -829,6 +890,7 @@ async def render_explore_detail(c: Ctx, d: dict, origin: str) -> None:
+     it = d["explore"][d["x_index"]]
+     month = date.fromisoformat(d["explore_month"])
+     depart = date.fromisoformat(it["depart"])
++    ret = date.fromisoformat(it["ret"]) if it.get("ret") else None
+     parts = [
+         p for p in (stops_text(c.lang, it["transfers"]), esc(it["airline"]) if it["airline"] else None) if p
+     ]
+@@ -837,10 +899,10 @@ async def render_explore_detail(c: Ctx, d: dict, origin: str) -> None:
+         "explore.detail",
+         flag=flag_emoji(it.get("cc")),
+         route=route,
+-        month=fmt_month(month, c.lang),
++        month=f"{fmt_month(month, c.lang)} · {_trip_label(d, c.lang)}",
+         price=fmt_price(it["price"]),
+         currency=it["currency"],
+-        date=fmt_date(depart, c.lang),
++        date=_dates_label(depart, ret, c.lang),
+         details=" · ".join(parts) or "—",
+     )
+     url = build_booking_link(
+@@ -848,7 +910,7 @@ async def render_explore_detail(c: Ctx, d: dict, origin: str) -> None:
+         origin=origin,
+         destination=it["code"],
+         depart_date=depart,
+-        return_date=None,
++        return_date=ret,
+         marker=c.deps.settings.travelpayouts_marker,
+         sub_id=f"x{c.user.id}",
+     )
+@@ -864,7 +926,7 @@ async def go_watch(
+         await cb.answer(tr("error.stale"), show_alert=True)
+         return
+     await cb.answer()
+-    await state.update_data(mode="month", ret=None, direct=False)
++    await state.update_data(mode="month", ret=None)  # the trip type (one way / N-day stay) is kept
+     await goto(_ctx(cb, state, user, session, tr, deps), "target")
+ 
+ 
+diff --git a/src/flightbot/bot/i18n/az.py b/src/flightbot/bot/i18n/az.py
+index 3f9a886..2b5dc27 100644
+--- a/src/flightbot/bot/i18n/az.py
++++ b/src/flightbot/bot/i18n/az.py
+@@ -26,10 +26,7 @@ MESSAGES = {
+     "menu.list": "📋 İzləmələrim",
+     "btn.back": "◀️ Geri",
+     "btn.cancel_flow": "❌ Ləğv",
+-    "btn.yes": "Bəli",
+-    "btn.no": "Xeyr",
+-    "btn.oneway": "Tək istiqamət",
+-    "btn.roundtrip": "Gediş-gəliş",
++    "btn.oneway": "➡️ Tək istiqamət",
+     "btn.pause": "⏸ Dayandır",
+     "btn.resume": "▶️ Davam et",
+     "btn.delete": "🗑 Sil",
+@@ -41,9 +38,7 @@ MESSAGES = {
+     "btn.pause_short": "⏸ Dayandır",
+     "btn.origin_change": "📍 {origin} · dəyiş",
+     "btn.explore": "🌍 Hər yerə (ən ucuzu tap)",
+-    "btn.exact_date": "📅 Dəqiq tarix",
+-    "btn.advanced": "⚙️ Ətraflı: gediş-gəliş / birbaşa",
+-    "btn.advanced_on": "✅ Ətraflı seçimlər açıqdır",
++    "btn.exact_date": "📅 Dəqiq tarix (təqvim)",
+     "btn.target_rec": "⭐ −{pct}% · {price}",
+     "btn.target_pct": "−{pct}% · {price}",
+     "btn.target_continue": "✅ Bəli, davam",
+@@ -60,12 +55,8 @@ MESSAGES = {
+     "quota.max_flexible": "⚠️ Ay üzrə (çevik tarixli) izləmə limitinə çatdınız ({limit}). Birini silin və ya dəqiq tarix seçin.",
+     "step.dest": "🛬 <b>Haraya uçmaq istəyirsiniz?</b>\nHaradan: <b>{origin}</b>\n\nPopulyar istiqamətlər aşağıdadır. Başqa şəhər üçün adını yazın.",
+     "step.origin": "📍 <b>Haradan uçursunuz?</b> Şəhər adını yazın (məs. Bakı).",
+-    "step.when": "🗓 <b>{route}</b>\n\nHansı ay? Həmin ay üzrə ən ucuz günü tapıb izləyəcəm.",
+-    "step.date": "📅 Gediş tarixini yazın: GG.AA.İİİİ (məs. 15.07.2026)",
+-    "step.trip": "Tək istiqamət, yoxsa gediş-gəliş?",
+-    "step.ret_date": "Qayıdış tarixini yazın: GG.AA.İİİİ",
+-    "step.ret_month": "Qayıdış ayı?",
+-    "step.direct": "Yalnız birbaşa reyslər?",
++    "step.when": "🗓 <b>{route}</b> · {trip}\n\nHansı ay? Həmin ay üzrə ən ucuz variantı tapıb izləyəcəm.",
++    "step.trip": "🧳 <b>{route}</b>\n\nNecə səyahət edirsiniz? Gediş-dönüş üçün neçə gün qalacağınızı seçin və ya tarixləri təqvimdən seçin.",
+     "step.target": "🎯 <b>{route}</b> · {dates}\n\n{info}\nHədəf qiyməti seçin və ya yazın ({currency}). Ondan ucuz olan kimi sizə yazacam.",
+     "place.pick": "Seçin:",
+     "place.not_found": "Tapılmadı. Başqa cür yazın (məs. İstanbul və ya IST) və ya populyar istiqamətlərdən seçin.",
+@@ -102,13 +93,13 @@ MESSAGES = {
+     "edit.saved": "✅ Hədəf yeniləndi: ≤ {target} {currency}",
+     "search.ask_month": "🔎 Hansı ay üçün axtaraq?",
+     "search.searching": "🔎 Axtarıram...",
+-    "search.header": "🔎 <b>{route}</b> · {month} · ən ucuz günlər:",
++    "search.header": "🔎 <b>{route}</b> · {month} · {trip} · ən ucuz variantlar:",
+     "search.line": "• {date} — <b>{price} {currency}</b> ({details})",
+     "search.none": "Bu ay üçün qiymət tapılmadı.",
+     "search.failed": "😕 Qiymət xidməti hazırda cavab vermir. Bir az sonra yenidən cəhd edin.",
+-    "explore.ask_month": "🌍 <b>{origin}</b>-dan hansı ay uçmaq istəyirsiniz?\nHəmin ay üzrə bütün dünyada ən ucuz istiqamətləri göstərəcəm.",
++    "explore.ask_month": "🌍 <b>{origin}</b>-dan hansı ay uçmaq istəyirsiniz? ({trip})\nHəmin ay üzrə bütün dünyada ən ucuz istiqamətləri göstərəcəm.",
+     "explore.looking": "🌍 Dünyada ən ucuz istiqamətləri axtarıram...",
+-    "explore.header": "🌍 <b>{origin} → hər yerə</b> · {month}\nƏn ucuz istiqamətlər (birini seçin):",
++    "explore.header": "🌍 <b>{origin} → hər yerə</b> · {month} · {trip}\nƏn ucuz istiqamətlər (birini seçin):",
+     "explore.none": "Bu ay üçün istiqamət tapılmadı. Başqa ay seçin.",
+     "explore.failed": "😕 Qiymət xidməti hazırda cavab vermir. Bir az sonra yenidən cəhd edin.",
+     "explore.detail": "{flag} <b>{route}</b> · {month}\n💰 Ən ucuz: <b>{price} {currency}</b>\n📅 {date}\n🛫 {details}\n\nℹ️ Qiymət keşlənmiş datadır, sayta keçəndə dəyişə bilər.",
+@@ -134,6 +125,18 @@ MESSAGES = {
+     "feedback.thanks": "Təşəkkürlər! 🙏",
+     "delete.confirm": "⚠️ Bütün məlumatlarınız (izləmələr, bildirişlər, ayarlar) birdəfəlik silinəcək. Əminsiniz?",
+     "delete.done": "✅ Bütün məlumatlarınız silindi. İstəsəniz /start ilə yenidən başlaya bilərsiniz.",
++    "btn.stay": "↔️ {n} gün",
++    "btn.calendar": "📅 Tarixləri təqvimdən seç",
++    "btn.direct_toggle": "✈️ Yalnız birbaşa: {state}",
++    "step.cal_dep": "📅 <b>{route}</b> · {trip}\nGediş tarixini seçin (və ya yazın: 15.03.2027):",
++    "step.cal_ret": "📅 <b>{route}</b>\nGediş: {date}\nQayıdış tarixini seçin (və ya yazın):",
++    "trip.oneway": "tək istiqamət",
++    "trip.stay": "gediş-dönüş, {n} gün",
++    "trip.dates": "gediş-dönüş",
++    "cal.weekdays": "B.e,Ç.a,Ç,C.a,C,Ş,B",
++    "flag.stay": "{n} gün",
++    "invalid.bad_stay": "Qalma müddəti yanlışdır (1-30 gün).",
++    "explore.anywhere": "hər yerə",
+     "cmd.new": "Yeni izləmə",
+     "cmd.explore": "Hər yerə: ən ucuz istiqamətlər",
+     "cmd.list": "İzləmələrim",
+diff --git a/src/flightbot/bot/i18n/en.py b/src/flightbot/bot/i18n/en.py
+index e7da034..34e33fe 100644
+--- a/src/flightbot/bot/i18n/en.py
++++ b/src/flightbot/bot/i18n/en.py
+@@ -26,10 +26,7 @@ MESSAGES = {
+     "menu.list": "📋 My watches",
+     "btn.back": "◀️ Back",
+     "btn.cancel_flow": "❌ Cancel",
+-    "btn.yes": "Yes",
+-    "btn.no": "No",
+-    "btn.oneway": "One way",
+-    "btn.roundtrip": "Round trip",
++    "btn.oneway": "➡️ One way",
+     "btn.pause": "⏸ Pause",
+     "btn.resume": "▶️ Resume",
+     "btn.delete": "🗑 Delete",
+@@ -41,9 +38,7 @@ MESSAGES = {
+     "btn.pause_short": "⏸ Pause",
+     "btn.origin_change": "📍 {origin} · change",
+     "btn.explore": "🌍 Anywhere (find the cheapest)",
+-    "btn.exact_date": "📅 Exact date",
+-    "btn.advanced": "⚙️ Details: round trip / direct",
+-    "btn.advanced_on": "✅ Detailed options are on",
++    "btn.exact_date": "📅 Exact date (calendar)",
+     "btn.target_rec": "⭐ −{pct}% · {price}",
+     "btn.target_pct": "−{pct}% · {price}",
+     "btn.target_continue": "✅ Yes, continue",
+@@ -60,12 +55,8 @@ MESSAGES = {
+     "quota.max_flexible": "⚠️ You've reached the whole-month watch limit ({limit}). Delete one or pick an exact date.",
+     "step.dest": "🛬 <b>Where do you want to fly?</b>\nFrom: <b>{origin}</b>\n\nPopular destinations are below. For another city, type its name.",
+     "step.origin": "📍 <b>Where are you flying from?</b> Type a city (e.g. Baku).",
+-    "step.when": "🗓 <b>{route}</b>\n\nWhich month? I'll find the cheapest day of that month and watch it.",
+-    "step.date": "📅 Enter the departure date: DD.MM.YYYY (e.g. 15.07.2026)",
+-    "step.trip": "One way or round trip?",
+-    "step.ret_date": "Enter the return date: DD.MM.YYYY",
+-    "step.ret_month": "Return month?",
+-    "step.direct": "Direct flights only?",
++    "step.when": "🗓 <b>{route}</b> · {trip}\n\nWhich month? I'll find the cheapest option in that month and watch it.",
++    "step.trip": "🧳 <b>{route}</b>\n\nHow are you travelling? For a round trip pick how many days you'll stay, or pick the dates on a calendar.",
+     "step.target": "🎯 <b>{route}</b> · {dates}\n\n{info}\nPick or type your target price ({currency}). I'll message you as soon as it's cheaper.",
+     "place.pick": "Choose:",
+     "place.not_found": "Not found. Try another spelling (e.g. Istanbul or IST) or pick a popular one.",
+@@ -102,13 +93,13 @@ MESSAGES = {
+     "edit.saved": "✅ Target updated: ≤ {target} {currency}",
+     "search.ask_month": "🔎 Which month should I search?",
+     "search.searching": "🔎 Searching...",
+-    "search.header": "🔎 <b>{route}</b> · {month} · cheapest days:",
++    "search.header": "🔎 <b>{route}</b> · {month} · {trip} · cheapest options:",
+     "search.line": "• {date} — <b>{price} {currency}</b> ({details})",
+     "search.none": "No prices found for that month.",
+     "search.failed": "😕 The price service isn't responding right now. Please try again later.",
+-    "explore.ask_month": "🌍 Which month do you want to fly from <b>{origin}</b>?\nI'll show the cheapest destinations worldwide for that month.",
++    "explore.ask_month": "🌍 Which month do you want to fly from <b>{origin}</b>? ({trip})\nI'll show the cheapest destinations worldwide for that month.",
+     "explore.looking": "🌍 Looking for the cheapest destinations in the world...",
+-    "explore.header": "🌍 <b>{origin} → anywhere</b> · {month}\nCheapest destinations (pick one):",
++    "explore.header": "🌍 <b>{origin} → anywhere</b> · {month} · {trip}\nCheapest destinations (pick one):",
+     "explore.none": "No destinations found for that month. Pick another month.",
+     "explore.failed": "😕 The price service isn't responding right now. Please try again later.",
+     "explore.detail": "{flag} <b>{route}</b> · {month}\n💰 Cheapest: <b>{price} {currency}</b>\n📅 {date}\n🛫 {details}\n\nℹ️ Price is from cached data and may change on the booking site.",
+@@ -134,6 +125,18 @@ MESSAGES = {
+     "feedback.thanks": "Thank you! 🙏",
+     "delete.confirm": "⚠️ All your data (watches, notifications, settings) will be permanently deleted. Are you sure?",
+     "delete.done": "✅ All your data has been deleted. You can start over any time with /start.",
++    "btn.stay": "↔️ {n} days",
++    "btn.calendar": "📅 Pick dates on a calendar",
++    "btn.direct_toggle": "✈️ Direct only: {state}",
++    "step.cal_dep": "📅 <b>{route}</b> · {trip}\nPick the departure date (or type it: 15.03.2027):",
++    "step.cal_ret": "📅 <b>{route}</b>\nDeparture: {date}\nPick the return date (or type it):",
++    "trip.oneway": "one way",
++    "trip.stay": "round trip, {n} days",
++    "trip.dates": "round trip",
++    "cal.weekdays": "Mo,Tu,We,Th,Fr,Sa,Su",
++    "flag.stay": "{n} days",
++    "invalid.bad_stay": "Invalid length of stay (1-30 days).",
++    "explore.anywhere": "anywhere",
+     "cmd.new": "New watch",
+     "cmd.explore": "Anywhere: cheapest destinations",
+     "cmd.list": "My watches",
+diff --git a/src/flightbot/bot/i18n/ru.py b/src/flightbot/bot/i18n/ru.py
+index 154bd59..7987634 100644
+--- a/src/flightbot/bot/i18n/ru.py
++++ b/src/flightbot/bot/i18n/ru.py
+@@ -26,10 +26,7 @@ MESSAGES = {
+     "menu.list": "📋 Мои подписки",
+     "btn.back": "◀️ Назад",
+     "btn.cancel_flow": "❌ Отмена",
+-    "btn.yes": "Да",
+-    "btn.no": "Нет",
+-    "btn.oneway": "В одну сторону",
+-    "btn.roundtrip": "Туда и обратно",
++    "btn.oneway": "➡️ В одну сторону",
+     "btn.pause": "⏸ Приостановить",
+     "btn.resume": "▶️ Возобновить",
+     "btn.delete": "🗑 Удалить",
+@@ -41,9 +38,7 @@ MESSAGES = {
+     "btn.pause_short": "⏸ Приостановить",
+     "btn.origin_change": "📍 {origin} · изменить",
+     "btn.explore": "🌍 Куда угодно (найти дешевле)",
+-    "btn.exact_date": "📅 Точная дата",
+-    "btn.advanced": "⚙️ Подробнее: туда-обратно / прямой",
+-    "btn.advanced_on": "✅ Подробные настройки включены",
++    "btn.exact_date": "📅 Точная дата (календарь)",
+     "btn.target_rec": "⭐ −{pct}% · {price}",
+     "btn.target_pct": "−{pct}% · {price}",
+     "btn.target_continue": "✅ Да, продолжить",
+@@ -60,12 +55,8 @@ MESSAGES = {
+     "quota.max_flexible": "⚠️ Достигнут лимит подписок по месяцу ({limit}). Удалите одну или выберите точную дату.",
+     "step.dest": "🛬 <b>Куда хотите полететь?</b>\nОткуда: <b>{origin}</b>\n\nПопулярные направления ниже. Для другого города напишите название.",
+     "step.origin": "📍 <b>Откуда летите?</b> Напишите город (например, Баку).",
+-    "step.when": "🗓 <b>{route}</b>\n\nКакой месяц? Найду самый дешёвый день этого месяца и буду следить.",
+-    "step.date": "📅 Введите дату вылета: ДД.ММ.ГГГГ (например, 15.07.2026)",
+-    "step.trip": "В одну сторону или туда и обратно?",
+-    "step.ret_date": "Введите дату возвращения: ДД.ММ.ГГГГ",
+-    "step.ret_month": "Месяц возвращения?",
+-    "step.direct": "Только прямые рейсы?",
++    "step.when": "🗓 <b>{route}</b> · {trip}\n\nКакой месяц? Найду самый дешёвый вариант в этом месяце и буду следить.",
++    "step.trip": "🧳 <b>{route}</b>\n\nКак летите? Для поездки туда-обратно выберите, на сколько дней, или выберите даты в календаре.",
+     "step.target": "🎯 <b>{route}</b> · {dates}\n\n{info}\nВыберите или введите целевую цену ({currency}). Напишу, как только станет дешевле.",
+     "place.pick": "Выберите:",
+     "place.not_found": "Не нашёл. Попробуйте иначе (например, Стамбул или IST) или выберите из популярных.",
+@@ -102,13 +93,13 @@ MESSAGES = {
+     "edit.saved": "✅ Цель обновлена: ≤ {target} {currency}",
+     "search.ask_month": "🔎 За какой месяц искать?",
+     "search.searching": "🔎 Ищу...",
+-    "search.header": "🔎 <b>{route}</b> · {month} · самые дешёвые дни:",
++    "search.header": "🔎 <b>{route}</b> · {month} · {trip} · самые дешёвые варианты:",
+     "search.line": "• {date} — <b>{price} {currency}</b> ({details})",
+     "search.none": "На этот месяц цен не найдено.",
+     "search.failed": "😕 Сервис цен сейчас не отвечает. Попробуйте позже.",
+-    "explore.ask_month": "🌍 В каком месяце хотите вылететь из <b>{origin}</b>?\nПокажу самые дешёвые направления по всему миру на этот месяц.",
++    "explore.ask_month": "🌍 В каком месяце хотите вылететь из <b>{origin}</b>? ({trip})\nПокажу самые дешёвые направления по всему миру на этот месяц.",
+     "explore.looking": "🌍 Ищу самые дешёвые направления в мире...",
+-    "explore.header": "🌍 <b>{origin} → куда угодно</b> · {month}\nСамые дешёвые направления (выберите одно):",
++    "explore.header": "🌍 <b>{origin} → куда угодно</b> · {month} · {trip}\nСамые дешёвые направления (выберите одно):",
+     "explore.none": "На этот месяц направлений не найдено. Выберите другой месяц.",
+     "explore.failed": "😕 Сервис цен сейчас не отвечает. Попробуйте позже.",
+     "explore.detail": "{flag} <b>{route}</b> · {month}\n💰 Самый дешёвый: <b>{price} {currency}</b>\n📅 {date}\n🛫 {details}\n\nℹ️ Цена из кэша и может измениться на сайте.",
+@@ -134,6 +125,18 @@ MESSAGES = {
+     "feedback.thanks": "Спасибо! 🙏",
+     "delete.confirm": "⚠️ Все ваши данные (подписки, уведомления, настройки) будут удалены безвозвратно. Вы уверены?",
+     "delete.done": "✅ Все ваши данные удалены. При желании можно начать заново через /start.",
++    "btn.stay": "↔️ {n} дн.",
++    "btn.calendar": "📅 Выбрать даты в календаре",
++    "btn.direct_toggle": "✈️ Только прямые: {state}",
++    "step.cal_dep": "📅 <b>{route}</b> · {trip}\nВыберите дату вылета (или введите: 15.03.2027):",
++    "step.cal_ret": "📅 <b>{route}</b>\nВылет: {date}\nВыберите дату возвращения (или введите):",
++    "trip.oneway": "в одну сторону",
++    "trip.stay": "туда-обратно, {n} дн.",
++    "trip.dates": "туда-обратно",
++    "cal.weekdays": "Пн,Вт,Ср,Чт,Пт,Сб,Вс",
++    "flag.stay": "{n} дн.",
++    "invalid.bad_stay": "Неверная длительность поездки (1–30 дней).",
++    "explore.anywhere": "куда угодно",
+     "cmd.new": "Новая подписка",
+     "cmd.explore": "Куда угодно: дешёвые направления",
+     "cmd.list": "Мои подписки",
+diff --git a/src/flightbot/bot/keyboards.py b/src/flightbot/bot/keyboards.py
+index c934fe5..2302bd0 100644
+--- a/src/flightbot/bot/keyboards.py
++++ b/src/flightbot/bot/keyboards.py
+@@ -84,53 +84,44 @@ def months_rows(which: str, months: list[date], lang: str) -> list[Row]:
+     return _pairs(buttons)
+ 
+ 
+-def when_kb(months: list[date], lang: str, *, simple: bool, advanced: bool) -> InlineKeyboardMarkup:
++def when_kb(months: list[date], lang: str, *, exact: bool) -> InlineKeyboardMarkup:
++    """Month grid. `exact`: also offer an exact departure date on a calendar (one-way watches)."""
+     rows = months_rows("dep", months, lang)
+-    if not simple:
++    if exact:
+         rows.append([_btn(t(lang, "btn.exact_date"), cb.GoCb(to="exact"))])
+-        label = t(lang, "btn.advanced_on" if advanced else "btn.advanced")
+-        rows.append([_btn(label, cb.GoCb(to="advanced"))])
+     rows.append(nav_row(lang))
+     return _kb(rows)
+ 
+ 
+-def explore_months_kb(months: list[date], origin: str, lang: str, *, back: bool) -> InlineKeyboardMarkup:
+-    rows = months_rows("dep", months, lang)
+-    rows.append([_btn(t(lang, "btn.origin_change", origin=place_name(origin, lang)), cb.GoCb(to="origin"))])
++STAY_OPTIONS = (3, 4, 5, 6, 7, 14)
++
++
++def trip_kb(
++    lang: str, *, direct: bool, calendar: bool, back: bool, origin: str | None = None
++) -> InlineKeyboardMarkup:
++    """One tap chooses the trip: one way, a round trip of N days, or exact dates on a calendar.
++    `origin`: also offer to change the origin (used by explore, which has no destination step)."""
++    rows: list[Row] = [[_btn(t(lang, "btn.oneway"), cb.TripCb(kind="oneway"))]]
++    stays = [_btn(t(lang, "btn.stay", n=n), cb.TripCb(kind="stay", n=n)) for n in STAY_OPTIONS]
++    rows += [stays[:3], stays[3:]]
++    if calendar:
++        rows.append([_btn(t(lang, "btn.calendar"), cb.TripCb(kind="dates"))])
++    state = t(lang, "state.on" if direct else "state.off")
++    rows.append([_btn(t(lang, "btn.direct_toggle", state=state), cb.GoCb(to="direct"))])
++    if origin:
++        rows.append(
++            [_btn(t(lang, "btn.origin_change", origin=place_name(origin, lang)), cb.GoCb(to="origin"))]
++        )
+     rows.append(nav_row(lang, back=back))
+     return _kb(rows)
+ 
+ 
+-def ret_months_kb(months: list[date], lang: str) -> InlineKeyboardMarkup:
+-    rows = months_rows("ret", months, lang)
++def explore_months_kb(months: list[date], lang: str) -> InlineKeyboardMarkup:
++    rows = months_rows("dep", months, lang)
+     rows.append(nav_row(lang))
+     return _kb(rows)
+ 
+ 
+-def trip_kb(lang: str) -> InlineKeyboardMarkup:
+-    return _kb(
+-        [
+-            [
+-                _btn(t(lang, "btn.oneway"), cb.TripCb(round_trip=0)),
+-                _btn(t(lang, "btn.roundtrip"), cb.TripCb(round_trip=1)),
+-            ],
+-            nav_row(lang),
+-        ]
+-    )
+-
+-
+-def direct_kb(lang: str) -> InlineKeyboardMarkup:
+-    return _kb(
+-        [
+-            [
+-                _btn(t(lang, "btn.yes"), cb.DirectCb(direct=1)),
+-                _btn(t(lang, "btn.no"), cb.DirectCb(direct=0)),
+-            ],
+-            nav_row(lang),
+-        ]
+-    )
+-
+-
+ def nav_only_kb(lang: str, *, back: bool = True) -> InlineKeyboardMarkup:
+     return _kb([nav_row(lang, back=back)])
+ 
+diff --git a/src/flightbot/bot/states.py b/src/flightbot/bot/states.py
+index 8e39ff4..eaa9977 100644
+--- a/src/flightbot/bot/states.py
++++ b/src/flightbot/bot/states.py
+@@ -7,11 +7,10 @@ class Flow(StatesGroup):
+ 
+     dest = State()
+     origin = State()
+-    when = State()
+-    date = State()
+-    trip = State()
+-    ret = State()
+-    direct = State()
++    trip = State()  # one way / round trip with N days / pick dates on a calendar
++    when = State()  # month selection
++    cal_dep = State()  # calendar: departure date
++    cal_ret = State()  # calendar: return date
+     target = State()
+     x_when = State()  # explore: month selection
+     x_list = State()  # explore: list of destinations
+diff --git a/src/flightbot/core/stats.py b/src/flightbot/core/stats.py
+index f149582..3dd71b4 100644
+--- a/src/flightbot/core/stats.py
++++ b/src/flightbot/core/stats.py
+@@ -47,6 +47,12 @@ async def key_price_stats(session: AsyncSession, key: WatchKey, now: datetime) -
+                 else WatchKeyRow.return_date == key.return_date,
+                 WatchKeyRow.direct_only == key.direct_only,
+                 WatchKeyRow.currency == key.currency,
++                WatchKeyRow.stay_min.is_(None)
++                if key.stay_min is None
++                else WatchKeyRow.stay_min == key.stay_min,
++                WatchKeyRow.stay_max.is_(None)
++                if key.stay_max is None
++                else WatchKeyRow.stay_max == key.stay_max,
+             )
+         )
+     ).scalar_one_or_none()
+diff --git a/src/flightbot/core/watch_key.py b/src/flightbot/core/watch_key.py
+index fe4cf3a..f85455b 100644
+--- a/src/flightbot/core/watch_key.py
++++ b/src/flightbot/core/watch_key.py
+@@ -13,6 +13,7 @@ from enum import StrEnum
+ IATA_RE = re.compile(r"^[A-Z]{3}$")
+ CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+ MAX_HORIZON_DAYS = 360
++MAX_STAY_DAYS = 30
+ 
+ 
+ class DateMode(StrEnum):
+@@ -45,6 +46,9 @@ class WatchKey:
+     return_date: date | None
+     direct_only: bool
+     currency: str
++    # Round trip by month: how many days the traveller stays (inclusive range). None = not a stay-based key.
++    stay_min: int | None = None
++    stay_max: int | None = None
+ 
+     @classmethod
+     def create(
+@@ -57,6 +61,8 @@ class WatchKey:
+         return_date: date | None = None,
+         direct_only: bool = False,
+         currency: str = "USD",
++        stay_min: int | None = None,
++        stay_max: int | None = None,
+         today: date,
+     ) -> "WatchKey":
+         origin = origin.strip().upper()
+@@ -88,7 +94,16 @@ class WatchKey:
+         if (depart_date - today).days > MAX_HORIZON_DAYS:
+             raise InvalidWatch("date_too_far")
+ 
+-        return cls(origin, destination, mode, depart_date, return_date, direct_only, currency)
++        if stay_min is not None or stay_max is not None:
++            # A stay applies to "round trip, any departure day in the month": exact dates use return_date instead.
++            if stay_min is None or stay_max is None or mode is not DateMode.MONTH or return_date is not None:
++                raise InvalidWatch("bad_stay")
++            if not 1 <= stay_min <= stay_max <= MAX_STAY_DAYS:
++                raise InvalidWatch("bad_stay")
++
++        return cls(
++            origin, destination, mode, depart_date, return_date, direct_only, currency, stay_min, stay_max
++        )
+ 
+     @property
+     def window_start(self) -> date:
+@@ -107,7 +122,11 @@ class WatchKey:
+ 
+     @property
+     def is_round_trip(self) -> bool:
+-        return self.return_date is not None
++        return self.return_date is not None or self.stay_min is not None
++
++    @property
++    def has_stay(self) -> bool:
++        return self.stay_min is not None
+ 
+     def horizon_days(self, today: date) -> int:
+         """Approximate days until departure (the middle of the window in month mode). Determines check frequency."""
+@@ -120,7 +139,8 @@ class WatchKey:
+ 
+     def cache_id(self) -> str:
+         ret = self.return_date.isoformat() if self.return_date else "-"
++        stay = f"{self.stay_min}-{self.stay_max}" if self.has_stay else "-"
+         return (
+             f"{self.origin}:{self.destination}:{self.date_mode.value}:"
+-            f"{self.depart_date.isoformat()}:{ret}:{int(self.direct_only)}:{self.currency}"
++            f"{self.depart_date.isoformat()}:{ret}:{int(self.direct_only)}:{self.currency}:{stay}"
+         )
+diff --git a/src/flightbot/core/watches.py b/src/flightbot/core/watches.py
+index 6026f31..e32352c 100644
+--- a/src/flightbot/core/watches.py
++++ b/src/flightbot/core/watches.py
+@@ -55,6 +55,12 @@ def _check_quota(limits, active: int, flexible: int, is_flexible: bool) -> None:
+         raise QuotaExceeded("max_flexible", limits.max_flexible_watches)
+ 
+ 
++def _stay_conditions(key: WatchKey) -> list:
++    if not key.has_stay:
++        return [WatchKeyRow.stay_min.is_(None), WatchKeyRow.stay_max.is_(None)]
++    return [WatchKeyRow.stay_min == key.stay_min, WatchKeyRow.stay_max == key.stay_max]
++
++
+ async def get_or_create_key_id(session: AsyncSession, key: WatchKey) -> int:
+     values = dict(
+         origin=key.origin,
+@@ -64,6 +70,8 @@ async def get_or_create_key_id(session: AsyncSession, key: WatchKey) -> int:
+         return_date=key.return_date,
+         direct_only=key.direct_only,
+         currency=key.currency,
++        stay_min=key.stay_min,
++        stay_max=key.stay_max,
+         expires_on=key.window_end,
+     )
+     stmt = (
+@@ -90,6 +98,7 @@ async def get_or_create_key_id(session: AsyncSession, key: WatchKey) -> int:
+                 ret_cond,
+                 WatchKeyRow.direct_only == key.direct_only,
+                 WatchKeyRow.currency == key.currency,
++                *_stay_conditions(key),
+             )
+         )
+     ).scalar_one()
+diff --git a/src/flightbot/db/models.py b/src/flightbot/db/models.py
+index 705ea32..67926f0 100644
+--- a/src/flightbot/db/models.py
++++ b/src/flightbot/db/models.py
+@@ -81,12 +81,19 @@ class WatchKey(Base):
+             "return_date",
+             "direct_only",
+             "currency",
++            "stay_min",
++            "stay_max",
+             name="uq_watch_keys_signature",
+             postgresql_nulls_not_distinct=True,
+         ),
+         CheckConstraint("date_mode IN ('exact','month')", name="date_mode"),
+         CheckConstraint("char_length(origin) = 3 AND char_length(destination) = 3", name="iata"),
+         CheckConstraint("active_watch_count >= 0", name="count_nonneg"),
++        CheckConstraint(
++            "(stay_min IS NULL AND stay_max IS NULL) OR "
++            "(stay_min BETWEEN 1 AND 30 AND stay_max BETWEEN stay_min AND 30)",
++            name="stay_range",
++        ),
+         # The scheduler only looks at keys that are due and have an active subscriber.
+         Index(
+             "ix_watch_keys_due",
+@@ -103,6 +110,8 @@ class WatchKey(Base):
+     return_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+     direct_only: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+     currency: Mapped[str] = mapped_column(String(3))
++    stay_min: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
++    stay_max: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+     expires_on: Mapped[date] = mapped_column(Date)
+ 
+     next_check_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=func.now())
+diff --git a/src/flightbot/providers/base.py b/src/flightbot/providers/base.py
+index 3b17ebf..28296c5 100644
+--- a/src/flightbot/providers/base.py
++++ b/src/flightbot/providers/base.py
+@@ -49,9 +49,11 @@ class PriceProvider(Protocol):
+         direct_only: bool = False,
+         limit: int = 20,
+         fresh: bool = False,
++        stay: tuple[int, int] | None = None,
+     ) -> list[PriceQuote]:
+         """ "Anywhere": the cheapest destinations in the world from `origin` in a given month (one offer per destination),
+-        sorted by price ascending. `PriceQuote.destination` is set."""
++        sorted by price ascending. `PriceQuote.destination` is set. With `stay=(min, max)` the offers are
++        round trips whose length of stay falls in that range."""
+         ...
+ 
+ 
+@@ -88,3 +90,26 @@ def quote_from_json(d: dict[str, Any]) -> PriceQuote:
+         provider=d["provider"],
+         destination=d.get("destination"),
+     )
++
++
++def next_month(d: date) -> date:
++    return date(d.year + d.month // 12, d.month % 12 + 1, 1)
++
++
++def filter_by_stay(
++    quotes: list[PriceQuote], stay_min: int, stay_max: int, window: tuple[date, date] | None = None
++) -> list[PriceQuote]:
++    """Keep round trips whose stay is within [stay_min, stay_max] days (and whose departure is inside the window),
++    without duplicates, sorted by price."""
++    seen: set[tuple] = set()
++    out: list[PriceQuote] = []
++    for q in sorted(quotes, key=lambda q: q.price):
++        if q.return_date is None or not stay_min <= (q.return_date - q.depart_date).days <= stay_max:
++            continue
++        if window is not None and not window[0] <= q.depart_date <= window[1]:
++            continue
++        sig = (q.destination, q.depart_date, q.return_date, q.price, q.airline)
++        if sig not in seen:
++            seen.add(sig)
++            out.append(q)
++    return out
+diff --git a/src/flightbot/providers/fake.py b/src/flightbot/providers/fake.py
+index 1f40455..4d244ad 100644
+--- a/src/flightbot/providers/fake.py
++++ b/src/flightbot/providers/fake.py
+@@ -31,7 +31,7 @@ class FakeProvider:
+         bucket = int(now.timestamp() // (3 * 3600))
+         walk = 0.80 + (_h(key.cache_id(), bucket) % 45) / 100  # 0.80..1.24
+         direct = 1.15 if key.direct_only else 1.0
+-        rt = 1.8 if key.return_date else 1.0
++        rt = 1.8 if key.is_round_trip else 1.0
+         return Decimal(str(round(base * day_factor * walk * direct * rt, 2)))
+ 
+     async def offers(self, key: WatchKey, *, limit: int = 30, fresh: bool = False) -> list[PriceQuote]:
+@@ -44,12 +44,17 @@ class FakeProvider:
+         quotes = []
+         for d in days:
+             h = _h(key.cache_id(), d, "meta")
++            if key.has_stay:
++                span = key.stay_max - key.stay_min + 1
++                return_date = d + timedelta(days=key.stay_min + _h(key.cache_id(), d, "stay") % span)
++            else:
++                return_date = key.return_date
+             quotes.append(
+                 PriceQuote(
+                     price=self._price(key, d, now),
+                     currency=key.currency,
+                     depart_date=d,
+-                    return_date=key.return_date,
++                    return_date=return_date,
+                     airline=_AIRLINES[h % len(_AIRLINES)],
+                     transfers=0 if key.direct_only else h % 2,
+                     found_at=now,
+@@ -69,13 +74,23 @@ class FakeProvider:
+         direct_only: bool = False,
+         limit: int = 20,
+         fresh: bool = False,
++        stay: tuple[int, int] | None = None,
+     ) -> list[PriceQuote]:
+         now = self._now()
+         quotes = []
+         for dest in STATIC_PLACES:
+             if dest == origin:
+                 continue
+-            key = WatchKey(origin, dest, DateMode.MONTH, month.replace(day=1), None, direct_only, currency)
++            key = WatchKey(
++                origin,
++                dest,
++                DateMode.MONTH,
++                month.replace(day=1),
++                None,
++                direct_only,
++                currency,
++                *(stay if stay else (None, None)),
++            )
+             depart = max(month.replace(day=1), now.date()) + timedelta(days=_h(key.cache_id()) % 20)
+             h = _h(key.cache_id(), "meta")
+             quotes.append(
+@@ -83,7 +98,7 @@ class FakeProvider:
+                     price=self._price(key, depart, now),
+                     currency=currency,
+                     depart_date=depart,
+-                    return_date=None,
++                    return_date=depart + timedelta(days=stay[0]) if stay else None,
+                     airline=_AIRLINES[h % len(_AIRLINES)],
+                     transfers=0 if direct_only else h % 2,
+                     found_at=now,
+diff --git a/src/flightbot/providers/travelpayouts.py b/src/flightbot/providers/travelpayouts.py
+index 3a05c4a..487dfd5 100644
+--- a/src/flightbot/providers/travelpayouts.py
++++ b/src/flightbot/providers/travelpayouts.py
+@@ -9,7 +9,7 @@ per the docs only the cheapest ticket per destination is returned. Verify this b
+ """
+ 
+ import asyncio
+-from datetime import date, datetime
++from datetime import date, datetime, timedelta
+ from decimal import Decimal, InvalidOperation
+ from typing import Any
+ 
+@@ -18,11 +18,19 @@ import httpx
+ from flightbot import metrics
+ from flightbot.core.watch_key import DateMode, WatchKey
+ from flightbot.logging import get_logger
+-from flightbot.providers.base import PriceQuote, ProviderError, ProviderRateLimited
++from flightbot.providers.base import (
++    PriceQuote,
++    ProviderError,
++    ProviderRateLimited,
++    filter_by_stay,
++    next_month,
++)
+ 
+ log = get_logger(__name__)
+ 
+ PRICES_URL = "https://api.travelpayouts.com/aviasales/v3/prices_for_dates"
++# Round trips by length of stay: fetch more rows, because many are filtered out by the stay.
++STAY_FETCH_LIMIT = 100
+ 
+ 
+ def _date_param(d: date, mode: DateMode) -> str:
+@@ -90,7 +98,7 @@ class TravelpayoutsProvider:
+             "currency": key.currency.lower(),
+             "sorting": "price",
+             "direct": "true" if key.direct_only else "false",
+-            "one_way": "false" if key.return_date else "true",
++            "one_way": "false" if key.is_round_trip else "true",
+             "unique": "false",
+             "limit": limit,
+             "page": 1,
+@@ -134,8 +142,18 @@ class TravelpayoutsProvider:
+         raise ProviderError(f"provider unavailable: {last_exc!r}")
+ 
+     async def offers(self, key: WatchKey, *, limit: int = 30, fresh: bool = False) -> list[PriceQuote]:
+-        payload = await self._fetch(self._params(key, limit))
+-        return parse_offers(payload, key, self.name)
++        if not key.has_stay:
++            payload = await self._fetch(self._params(key, limit))
++            return parse_offers(payload, key, self.name)
++        # Round trip with a length of stay: the return can fall into the next month, so ask for both
++        # return months and keep only the trips whose stay matches. Costs 2 requests (see RateLimitedProvider).
++        quotes: list[PriceQuote] = []
++        for return_month in (key.depart_date, next_month(key.depart_date)):
++            params = self._params(key, STAY_FETCH_LIMIT)
++            params["return_at"] = return_month.strftime("%Y-%m")
++            quotes += parse_offers(await self._fetch(params), key, self.name)
++        window = (key.window_start, key.window_end)
++        return filter_by_stay(quotes, key.stay_min, key.stay_max, window)[:limit]
+ 
+     async def explore(
+         self,
+@@ -146,6 +164,7 @@ class TravelpayoutsProvider:
+         direct_only: bool = False,
+         limit: int = 20,
+         fresh: bool = False,
++        stay: tuple[int, int] | None = None,
+     ) -> list[PriceQuote]:
+         params: dict[str, Any] = {
+             "origin": origin,
+@@ -158,7 +177,20 @@ class TravelpayoutsProvider:
+             "limit": max(limit * 3, 30),  # enough left after filtering (origin==dest, duplicates)
+             "page": 1,
+         }
+-        quotes = parse_rows(await self._fetch(params), currency, self.name)
++        if stay is None:
++            quotes = parse_rows(await self._fetch(params), currency, self.name)
++        else:
++            quotes = []
++            for return_month in (month, next_month(month)):
++                quotes += parse_rows(
++                    await self._fetch(
++                        {**params, "one_way": "false", "return_at": return_month.strftime("%Y-%m")}
++                    ),
++                    currency,
++                    self.name,
++                )
++            last_day = next_month(month) - timedelta(days=1)
++            quotes = filter_by_stay(quotes, stay[0], stay[1], (month.replace(day=1), last_day))
+         best: dict[str, PriceQuote] = {}
+         for q in quotes:  # sorted by price ascending
+             if q.destination and q.destination != origin and q.destination not in best:
+diff --git a/src/flightbot/providers/wrappers.py b/src/flightbot/providers/wrappers.py
+index c03df3d..c3383c9 100644
+--- a/src/flightbot/providers/wrappers.py
++++ b/src/flightbot/providers/wrappers.py
+@@ -37,17 +37,21 @@ class RateLimitedProvider:
+         self._rps = rps
+         self.name = inner.name
+ 
+-    async def _wait(self) -> None:
++    async def _wait(self, cost: float = 1.0) -> None:
+         await self._bucket.wait(
+-            f"provider:{self.name}", rate=self._rps, capacity=max(1.0, self._rps), max_wait=120.0
++            f"provider:{self.name}",
++            rate=self._rps,
++            capacity=max(cost, self._rps),
++            cost=cost,
++            max_wait=120.0,
+         )
+ 
+     async def offers(self, key: WatchKey, *, limit: int = 30, fresh: bool = False) -> list[PriceQuote]:
+-        await self._wait()
++        await self._wait(2.0 if key.has_stay else 1.0)  # stay-based round trips cost 2 requests
+         return await self._inner.offers(key, limit=limit, fresh=fresh)
+ 
+     async def explore(self, **kwargs) -> list[PriceQuote]:
+-        await self._wait()
++        await self._wait(2.0 if kwargs.get("stay") else 1.0)
+         return await self._inner.explore(**kwargs)
+ 
+ 
+@@ -141,8 +145,10 @@ class CachedProvider:
+         direct_only: bool = False,
+         limit: int = 20,
+         fresh: bool = False,
++        stay: tuple[int, int] | None = None,
+     ) -> list[PriceQuote]:
+-        ck = f"explore:{origin}:{month:%Y-%m}:{currency}:{int(direct_only)}"
++        stay_id = f"{stay[0]}-{stay[1]}" if stay else "-"
++        ck = f"explore:{origin}:{month:%Y-%m}:{currency}:{int(direct_only)}:{stay_id}"
+         quotes = await self._cached(
+             ck,
+             EXPLORE_TTL_S,
+@@ -153,6 +159,7 @@ class CachedProvider:
+                 direct_only=direct_only,
+                 limit=EXPLORE_FETCH_LIMIT,
+                 fresh=fresh,
++                stay=stay,
+             ),
+             fresh=fresh,
+         )
+diff --git a/src/flightbot/workers/poller.py b/src/flightbot/workers/poller.py
+index 4e996f8..5c3db84 100644
+--- a/src/flightbot/workers/poller.py
++++ b/src/flightbot/workers/poller.py
+@@ -62,7 +62,7 @@ _CLAIM_SQL = text(
+     FROM due
+     WHERE wk.id = due.id
+     RETURNING wk.id, wk.origin, wk.destination, wk.date_mode, wk.depart_date, wk.return_date,
+-              wk.direct_only, wk.currency, wk.consecutive_failures
++              wk.direct_only, wk.currency, wk.stay_min, wk.stay_max, wk.consecutive_failures
+     """
+ )
+ 
+@@ -87,6 +87,8 @@ async def claim_due_keys(session: AsyncSession, *, limit: int, lease_s: int) ->
+                 return_date=r.return_date,
+                 direct_only=r.direct_only,
+                 currency=r.currency,
++                stay_min=r.stay_min,
++                stay_max=r.stay_max,
+             ),
+             consecutive_failures=r.consecutive_failures,
+         )
+diff --git a/tests/helpers.py b/tests/helpers.py
+index 5753950..2cf5dcf 100644
+--- a/tests/helpers.py
++++ b/tests/helpers.py
+@@ -25,6 +25,7 @@ def key(
+     ret_days=None,
+     direct=False,
+     currency="USD",
++    stay=None,
+ ) -> WatchKey:
+     t = today()
+     return WatchKey.create(
+@@ -35,6 +36,8 @@ def key(
+         return_date=(t + timedelta(days=ret_days)) if ret_days else None,
+         direct_only=direct,
+         currency=currency,
++        stay_min=stay,
++        stay_max=stay,
+         today=t,
+     )
+ 
+@@ -119,8 +122,9 @@ class ScriptedProvider:
+             )
+         ]
+ 
+-    async def explore(self, *, origin, month, currency, direct_only=False, limit=20, fresh=False):
++    async def explore(self, *, origin, month, currency, direct_only=False, limit=20, fresh=False, stay=None):
+         self.explore_calls += 1
++        self.explore_last = {"origin": origin, "month": month, "direct_only": direct_only, "stay": stay}
+         res = self.explore_result
+         if isinstance(res, Exception):
+             raise res
+diff --git a/tests/integration/test_bot_e2e.py b/tests/integration/test_bot_e2e.py
+index 6025227..7071443 100644
+--- a/tests/integration/test_bot_e2e.py
++++ b/tests/integration/test_bot_e2e.py
+@@ -11,7 +11,7 @@ import pytest
+ from aiogram.methods import EditMessageReplyMarkup
+ from sqlalchemy import text
+ 
+-from flightbot.bot.callbacks import MenuCb, MonthCb, WatchCb
++from flightbot.bot.callbacks import CalCb, MenuCb, MonthCb, WatchCb
+ from flightbot.bot.i18n import fmt_month
+ from flightbot.bot.parsing import next_months
+ from flightbot.bot.render import FbCb
+@@ -54,6 +54,7 @@ async def create_watch(chat: Chat, dest: str = "İstanbul", month_idx: int = 1,
+     """Standard 3 touches: destination -> month -> target."""
+     await chat.say("/new")
+     await chat.press(dest)
++    await chat.press("Tək istiqamət")
+     await chat.press(month_label(month_idx))
+     await chat.say(target)
+ 
+@@ -62,7 +63,8 @@ async def watch_rows(sm):
+     return await rows(
+         sm,
+         "select w.target_price, w.status, k.origin, k.destination, k.date_mode, k.depart_date, "
+-        "k.return_date, k.direct_only, k.currency from watches w join watch_keys k on k.id = w.watch_key_id "
++        "k.return_date, k.direct_only, k.currency, k.stay_min, k.stay_max "
++        "from watches w join watch_keys k on k.id = w.watch_key_id "
+         "order by w.id",
+     )
+ 
+@@ -96,40 +98,96 @@ async def test_returning_user_gets_menu(env):
+     assert "➕ Yeni izləmə" in chat.button_labels() and "🌍 Hər yerə" in chat.button_labels()
+ 
+ 
+-async def test_quick_start_button_on_welcome_message_works(env, sm):
+-    """No blank page: the popular button on the welcome message leads straight to month selection."""
++async def test_quick_start_button_on_welcome_message_works(env):
++    """No blank page: the popular button on the welcome message leads straight to the trip step."""
+     chat = env.chat(11)
+     await chat.say("/start")
+     await chat.press("İstanbul")
+-    assert "Bakı → İstanbul" in chat.last_text() and "Hansı ay" in chat.last_text()
++    assert "Bakı → İstanbul" in chat.last_text() and "Necə səyahət edirsiniz" in chat.last_text()
++    labels = chat.button_labels()
++    assert "➡️ Tək istiqamət" in labels and "📅 Tarixləri təqvimdən seç" in labels
++    assert all(f"↔️ {n} gün" in labels for n in (3, 4, 5, 6, 7, 14))
++    assert any("Yalnız birbaşa: bağlı" in x for x in labels)
+ 
+ 
+ # ======================================================== default watch: 3 touches
+-async def test_default_watch_takes_three_touches_after_new(env, sm):
++async def test_one_way_watch_takes_four_touches_after_new(env, sm):
+     chat = env.chat()
+     await chat.say("/new")
+     await chat.press("İstanbul")  # 1
+-    await chat.press(month_label(1))  # 2
+-    await chat.say("150")  # 3
++    await chat.press("Tək istiqamət")  # 2
++    await chat.press(month_label(1))  # 3
++    await chat.say("150")  # 4
+     assert "İzləmə yaradıldı" in chat.last_text() and "Bakı → İstanbul" in chat.last_text()
+     assert "Hazırda: 200 USD" in chat.last_text()
+     r = (await watch_rows(sm))[0]
+-    assert (r.origin, r.destination, r.date_mode, r.return_date, r.direct_only, r.currency) == (
++    assert (r.origin, r.destination, r.date_mode, r.return_date, r.direct_only, r.currency, r.stay_min) == (
+         "GYD",
+         "IST",
+         "month",
+         None,
+         False,
+         "USD",
++        None,
+     )
+     assert float(r.target_price) == 150.0 and r.depart_date == months()[1]
+     assert {"➕ Başqa marşrut", "📋 İzləmələrim"} <= set(chat.button_labels())
+ 
+ 
++async def test_round_trip_with_length_of_stay(env, sm):
++    """The main use case: a round trip, staying N days, cheapest in a given month."""
++    chat = env.chat()
++    await chat.say("/new")
++    await chat.press("İstanbul")
++    await chat.press("↔️ 7 gün")
++    assert "gediş-dönüş, 7 gün" in chat.last_text() and "Hansı ay" in chat.last_text()
++    assert not any(
++        "Dəqiq tarix" in x for x in chat.button_labels()
++    )  # exact dates live in the calendar option
++    await chat.press(month_label(2))
++    assert "Hazırda ən ucuz" in chat.last_text() and "7 gün" in chat.last_text()
++    await chat.press("⭐")
++    r = (await watch_rows(sm))[0]
++    assert (r.date_mode, r.depart_date, r.return_date, r.stay_min, r.stay_max) == (
++        "month",
++        months()[2],
++        None,
++        7,
++        7,
++    )
++    assert "gediş-gəliş · 7 gün" in chat.last_text()
++
++
++async def test_each_length_of_stay_is_its_own_key_and_same_stay_is_deduped(env, sm):
++    for tg, stay in ((1, "↔️ 7 gün"), (2, "↔️ 7 gün"), (3, "↔️ 14 gün"), (4, "➡️ Tək istiqamət")):
++        chat = env.chat(tg)
++        await chat.say("/new")
++        await chat.press("İstanbul")
++        await chat.press(stay)
++        await chat.press(month_label(1))
++        await chat.say("100")
++    assert await scalar(sm, "select count(*) from watches") == 4
++    assert await scalar(sm, "select count(*) from watch_keys") == 3  # 7 days (shared), 14 days, one way
++
++
++async def test_direct_only_toggle(env, sm):
++    chat = env.chat()
++    await chat.say("/new")
++    await chat.press("İstanbul")
++    await chat.press("Yalnız birbaşa")
++    assert any("Yalnız birbaşa: açıq" in x for x in chat.button_labels())
++    await chat.press("↔️ 5 gün")
++    await chat.press(month_label(1))
++    await chat.say("100")
++    r = (await watch_rows(sm))[0]
++    assert r.direct_only is True and r.stay_min == 5
++
++
+ async def test_target_step_shows_price_and_recommended_quick_button(env, sm):
+     chat = env.chat()
+     await chat.say("/new")
+     await chat.press("Dubay")
++    await chat.press("Tək istiqamət")
+     await chat.press(month_label(2))
+     assert "Hazırda ən ucuz: <b>200 USD</b>" in chat.last_text()
+     labels = chat.button_labels()
+@@ -142,6 +200,7 @@ async def test_waiting_message_is_shown_then_replaced_in_place(env):
+     chat = env.chat()
+     await chat.say("/new")
+     await chat.press("İstanbul")
++    await chat.press("Tək istiqamət")
+     await chat.press(month_label(1))
+     seen = chat.texts()
+     assert any("Qiymətlərə baxıram" in t for t in seen) and "Hazırda ən ucuz" in seen[-1]
+@@ -173,6 +232,7 @@ async def test_no_current_price_still_allows_watch_without_quick_buttons(env, sm
+     chat = env.chat()
+     await chat.say("/new")
+     await chat.press("İstanbul")
++    await chat.press("Tək istiqamət")
+     await chat.press(month_label(1))
+     assert "qiymət tapılmadı" in chat.last_text()
+     assert not any("%" in x for x in chat.button_labels())  # no quick-target buttons
+@@ -184,6 +244,7 @@ async def test_invalid_target_inputs_rejected(env, sm):
+     chat = env.chat()
+     await chat.say("/new")
+     await chat.press("İstanbul")
++    await chat.press("Tək istiqamət")
+     await chat.press(month_label(1))
+     for bad in ("pulsuz", "-5", "0"):
+         await chat.say(bad)
+@@ -211,11 +272,13 @@ async def test_free_plan_allows_three_month_watches_and_blocks_fourth(env, sm):
+ 
+ 
+ # =================================================================== exact date and details
+-async def test_exact_date_flow(env, sm):
++async def test_one_way_exact_date_typed_into_the_calendar_step(env, sm):
+     chat = env.chat()
+     await chat.say("/new")
+     await chat.press("İstanbul")
++    await chat.press("Tək istiqamət")
+     await chat.press("Dəqiq tarix")
++    assert "Gediş tarixini seçin" in chat.last_text()
+     await chat.say("abc")
+     assert "başa düşmədim" in chat.last_text()
+     await chat.say("01.01.2020")
+@@ -225,43 +288,94 @@ async def test_exact_date_flow(env, sm):
+     await chat.say(dmy(30))
+     await chat.say("150")
+     r = (await watch_rows(sm))[0]
+-    assert r.date_mode == "exact" and r.return_date is None and not r.direct_only
++    assert r.date_mode == "exact" and r.return_date is None and r.stay_min is None
+ 
+ 
+-async def test_advanced_options_round_trip_and_direct(env, sm):
++async def test_one_way_exact_date_picked_on_the_calendar(env, sm):
+     chat = env.chat()
++    dep = today() + timedelta(days=12)
+     await chat.say("/new")
+     await chat.press("İstanbul")
+-    await chat.press("Ətraflı")
+-    assert any("açıqdır" in x for x in chat.button_labels())
+-    await chat.press(month_label(2))
+-    await chat.press("Gediş-gəliş")
++    await chat.press("Tək istiqamət")
++    await chat.press("Dəqiq tarix")
++    await chat.click(CalCb(which="dep", action="pick", v=f"{dep:%Y%m%d}").pack())
++    assert "Hazırda ən ucuz" in chat.last_text()
++    await chat.say("120")
++    r = (await watch_rows(sm))[0]
++    assert (r.date_mode, r.depart_date, r.return_date) == ("exact", dep, None)
++
++
++async def test_round_trip_dates_picked_on_the_calendar(env, sm):
++    chat = env.chat()
++    dep, ret = today() + timedelta(days=10), today() + timedelta(days=15)
++    await chat.say("/new")
++    await chat.press("İstanbul")
++    await chat.press("Tarixləri təqvimdən seç")
++    assert "Gediş tarixini seçin" in chat.last_text() and "B.e" in chat.button_labels()
++    await chat.click(CalCb(which="dep", action="pick", v=f"{dep:%Y%m%d}").pack())
++    assert "Qayıdış tarixini seçin" in chat.last_text()
++    await chat.click(CalCb(which="ret", action="pick", v=f"{ret:%Y%m%d}").pack())
++    assert "Hazırda ən ucuz" in chat.last_text()
++    await chat.say("150")
++    r = (await watch_rows(sm))[0]
++    assert (r.date_mode, r.depart_date, r.return_date, r.stay_min) == ("exact", dep, ret, None)
++    assert "gediş-gəliş" in chat.last_text()
++
++
++async def test_calendar_blocks_past_days_and_navigates_months(env):
++    chat = env.chat()
++    await chat.say("/new")
++    await chat.press("İstanbul")
++    await chat.press("Tarixləri təqvimdən seç")
+     labels = chat.button_labels()
++    this_month, next_m = months()[0], months()[1]
++    assert fmt_month(this_month, "az") in labels and "‹" not in labels  # can't go to the past
++    picks = [
++        CalCb.unpack(b.callback_data).v
++        for m, _ in chat.outgoing()[-1:]
++        for row in m.reply_markup.inline_keyboard
++        for b in row
++        if b.callback_data and b.callback_data.startswith("cal:dep:pick:")
++    ]
+     assert (
+-        month_label(1) not in labels and month_label(2) in labels
+-    )  # the return can't be before the departure
+-    await chat.press(month_label(3))
+-    await chat.press("Bəli")  # direct
+-    await chat.press("⭐")
+-    r = (await watch_rows(sm))[0]
+-    assert r.date_mode == "month" and r.return_date == months()[3] and r.direct_only is True
+-    assert "gediş-gəliş" in chat.last_text() and "birbaşa" in chat.last_text()
++        picks and min(picks) == f"{today():%Y%m%d}"
++    )  # today is the first pickable day, the past is disabled
++    await chat.press("›")
++    assert fmt_month(next_m, "az") in chat.button_labels() and "‹" in chat.button_labels()
++    await chat.press("‹")
++    assert fmt_month(this_month, "az") in chat.button_labels()
++    before = len(chat.session.log)
++    await chat.click(CalCb(which="dep", action="noop", v="").pack())  # a disabled day / filler
++    assert "Gediş tarixini seçin" in chat.last_text() and len(chat.session.log) >= before
+ 
+ 
+-async def test_exact_round_trip_return_before_departure_rejected(env, sm):
++async def test_calendar_return_must_be_after_departure_and_within_30_days(env, sm):
+     chat = env.chat()
++    dep = today() + timedelta(days=20)
+     await chat.say("/new")
+     await chat.press("İstanbul")
+-    await chat.press("Ətraflı")
+-    await chat.press("Dəqiq tarix")
+-    await chat.say(dmy(30))
+-    await chat.press("Gediş-gəliş")
+-    await chat.say(dmy(20))
++    await chat.press("Tarixləri təqvimdən seç")
++    await chat.say(dep.strftime("%d.%m.%Y"))  # typing works as well as tapping
++    assert "Qayıdış tarixini seçin" in chat.last_text()
++    await chat.say((dep - timedelta(days=2)).strftime("%d.%m.%Y"))
+     assert "gedişdən əvvəl ola bilməz" in chat.last_text()
+-    await chat.say(dmy(37))
+-    await chat.press("Xeyr")
+-    await chat.say("120")
+-    assert (await watch_rows(sm))[0].return_date is not None
++    await chat.say((dep + timedelta(days=40)).strftime("%d.%m.%Y"))
++    assert "Qalma müddəti yanlışdır" in chat.last_text()
++    await chat.say((dep + timedelta(days=6)).strftime("%d.%m.%Y"))
++    await chat.say("150")
++    r = (await watch_rows(sm))[0]
++    assert (r.depart_date, r.return_date) == (dep, dep + timedelta(days=6))
++
++
++async def test_stale_calendar_button_from_other_step_is_refused(env):
++    chat = env.chat()
++    await chat.say("/new")
++    await chat.press("İstanbul")
++    await chat.press("Tarixləri təqvimdən seç")
++    await chat.click(
++        CalCb(which="ret", action="pick", v="20300101").pack()
++    )  # a return button while picking departure
++    assert any("vaxtı keçib" in (a or "") for a in chat.alerts())
+ 
+ 
+ # ====================================================================== back and cancel
+@@ -269,7 +383,7 @@ async def test_back_button_returns_to_previous_step_and_edits_in_place(env):
+     chat = env.chat()
+     await chat.say("/new")
+     await chat.press("İstanbul")
+-    assert "Hansı ay" in chat.last_text()
++    assert "Necə səyahət edirsiniz" in chat.last_text()
+     await chat.press("Geri")
+     assert "Haraya uçmaq istəyirsiniz" in chat.last_text()
+     assert not any("Geri" in x for x in chat.button_labels())  # no "Back" on the first step
+@@ -280,6 +394,7 @@ async def test_back_from_target_to_month_and_choose_another_month(env, sm):
+     chat = env.chat()
+     await chat.say("/new")
+     await chat.press("İstanbul")
++    await chat.press("Tək istiqamət")
+     await chat.press(month_label(1))
+     await chat.press("Geri")
+     assert "Hansı ay" in chat.last_text()
+@@ -288,6 +403,18 @@ async def test_back_from_target_to_month_and_choose_another_month(env, sm):
+     assert (await watch_rows(sm))[0].depart_date == months()[3]
+ 
+ 
++async def test_back_from_return_calendar_to_departure_calendar(env):
++    chat = env.chat()
++    await chat.say("/new")
++    await chat.press("İstanbul")
++    await chat.press("Tarixləri təqvimdən seç")
++    await chat.say((today() + timedelta(days=9)).strftime("%d.%m.%Y"))
++    await chat.press("Geri")
++    assert "Gediş tarixini seçin" in chat.last_text()
++    await chat.press("Geri")
++    assert "Necə səyahət edirsiniz" in chat.last_text()
++
++
+ async def test_cancel_button_ends_flow_and_menu_is_shown(env, sm):
+     chat = env.chat()
+     await chat.say("/new")
+@@ -312,9 +439,9 @@ async def test_commands_work_in_the_middle_of_a_flow(env):
+ async def test_text_typed_instead_of_pressing_a_button_rerenders_step(env):
+     chat = env.chat()
+     await chat.say("/new")
+-    await chat.press("İstanbul")  # month step (buttons are expected)
+-    await chat.say("noyabr")
+-    assert "Hansı ay" in chat.last_text()  # it doesn't stay unanswered
++    await chat.press("İstanbul")  # trip step (buttons are expected)
++    await chat.say("gediş-dönüş")
++    assert "Necə səyahət edirsiniz" in chat.last_text()  # it doesn't stay unanswered
+ 
+ 
+ # =========================================================================== origin
+@@ -326,8 +453,8 @@ async def test_change_origin_then_complete_flow(env, sm):
+     await chat.say("ankara")
+     await chat.press("Ankara")
+     assert "Haradan: <b>Ankara</b>" in chat.last_text()  # returned to the destination step
+-    assert any("Bakı" in x for x in chat.button_labels()) is False
+     await chat.press("İstanbul")
++    await chat.press("Tək istiqamət")
+     await chat.press(month_label(1))
+     await chat.say("100")
+     assert (await watch_rows(sm))[0].origin == "ESB"
+@@ -352,31 +479,32 @@ async def test_destination_equal_to_origin_is_refused(env):
+     # after the refusal the flow continues: choosing another destination works
+     await chat.say("istanbul")
+     await chat.press("İstanbul")
+-    assert "Bakı → İstanbul" in chat.last_text() and "Hansı ay" in chat.last_text()
++    assert "Bakı → İstanbul" in chat.last_text() and "Necə səyahət edirsiniz" in chat.last_text()
+ 
+ 
+ # ===================================================== fallback: the bot never goes silent
+-async def test_free_text_city_goes_straight_to_month_step(env):
++async def test_free_text_city_goes_straight_to_trip_step(env):
+     chat = env.chat()
+     await chat.say("İstanbul")
+-    assert "Bakı → İstanbul" in chat.last_text() and "Hansı ay" in chat.last_text()
++    assert "Bakı → İstanbul" in chat.last_text() and "Necə səyahət edirsiniz" in chat.last_text()
+ 
+ 
+ async def test_free_text_route_with_origin(env, sm):
+     chat = env.chat()
+     await chat.say("Ankara Dubay")
+     assert "Ankara → Dubay" in chat.last_text()
++    await chat.press("↔️ 4 gün")
+     await chat.press(month_label(1))
+     await chat.say("100")
+     r = (await watch_rows(sm))[0]
+-    assert (r.origin, r.destination) == ("ESB", "DXB")
++    assert (r.origin, r.destination, r.stay_min) == ("ESB", "DXB", 4)
+ 
+ 
+ @pytest.mark.parametrize("text_", ["Bakı - İstanbul", "GYD IST", "baki → istanbul", "Tel-Əviv İstanbul"])
+ async def test_route_text_variants(env, text_):
+     chat = env.chat()
+     await chat.say(text_)
+-    assert "Hansı ay" in chat.last_text(), text_
++    assert "Necə səyahət edirsiniz" in chat.last_text(), text_
+ 
+ 
+ async def test_gibberish_unknown_command_and_non_text_get_a_reply_with_menu(env):
+@@ -404,6 +532,7 @@ async def test_provider_failure_during_search_keeps_user_in_flow(env):
+     chat = env.chat()
+     await chat.say("/search")
+     await chat.press("Dubay")
++    await chat.press("Tək istiqamət")
+     await chat.press(month_label(1))
+     assert "cavab vermir" in chat.last_text() and any("Geri" in x for x in chat.button_labels())
+ 
+@@ -417,6 +546,9 @@ async def test_explore_lists_cheapest_destinations_and_leads_to_a_watch(env, sm)
+     ]
+     chat = env.chat(7)
+     await chat.say("/explore")
++    assert "Bakı → hər yerə" in chat.last_text() and "Necə səyahət edirsiniz" in chat.last_text()
++    assert not any("təqvim" in x for x in chat.button_labels())  # no calendar option in explore
++    await chat.press("Tək istiqamət")
+     assert "hansı ay uçmaq" in chat.last_text()
+     await chat.press(month_label(1))
+     labels = chat.button_labels()
+@@ -424,6 +556,7 @@ async def test_explore_lists_cheapest_destinations_and_leads_to_a_watch(env, sm)
+     assert any("KUL" in x and "310 USD" in x for x in labels)  # unknown code: the code itself
+     assert any("🇹🇷" in x for x in labels) and any("🇦🇪" in x for x in labels)
+     assert env.provider.explore_calls == 1 and env.provider.calls == 0
++    assert env.provider.explore_last["stay"] is None
+ 
+     await chat.press("İstanbul")
+     detail = chat.last_text()
+@@ -440,16 +573,42 @@ async def test_explore_lists_cheapest_destinations_and_leads_to_a_watch(env, sm)
+     assert float(r.target_price) == 67.0  # 79 * 0.85 = 67.15 -> 67
+ 
+ 
++async def test_explore_round_trip_with_stay(env, sm):
++    dep = today() + timedelta(days=40)
++    env.provider.explore_result = [
++        PriceQuote(
++            Decimal("150"), "USD", dep, dep + timedelta(days=7), "J2", 0, None, None, "s", destination="IST"
++        )
++    ]
++    chat = env.chat()
++    await chat.say("/explore")
++    await chat.press("↔️ 7 gün")
++    assert "gediş-dönüş, 7 gün" in chat.last_text()
++    await chat.press(month_label(1))
++    assert env.provider.explore_last["stay"] == (7, 7)
++    await chat.press("İstanbul")
++    assert "→" in chat.last_text().split("📅")[1].split("\n")[0]  # departure → return dates
++    url = chat.url_of("Bilet tap")
++    assert f"{dep:%d%m}IST{dep + timedelta(days=7):%d%m}1" in url  # the booking link is a round-trip search
++    await chat.press("xəbər ver")
++    await chat.say("120")
++    r = (await watch_rows(sm))[0]
++    assert (r.destination, r.stay_min, r.stay_max, r.return_date) == ("IST", 7, 7, None)
++
++
+ async def test_explore_back_navigation_detail_to_list_to_months(env):
+     env.provider.explore_result = [quote("IST", "79"), quote("DXB", "95")]
+     chat = env.chat()
+     await chat.say("/explore")
++    await chat.press("Tək istiqamət")
+     await chat.press(month_label(1))
+     await chat.press("Dubay")
+     await chat.press("Geri")
+     assert "Ən ucuz istiqamətlər" in chat.last_text()
+     await chat.press("Geri")
+     assert "hansı ay uçmaq" in chat.last_text()
++    await chat.press("Geri")
++    assert "Necə səyahət edirsiniz" in chat.last_text()
+ 
+ 
+ async def test_explore_from_destination_step_button_and_menu(env):
+@@ -457,21 +616,23 @@ async def test_explore_from_destination_step_button_and_menu(env):
+     chat = env.chat()
+     await chat.say("/new")
+     await chat.press("Hər yerə")
+-    assert "hansı ay uçmaq" in chat.last_text()
++    assert "Bakı → hər yerə" in chat.last_text()
+     await chat.say("/start")
+     await chat.click(MenuCb(action="explore").pack())
+-    assert "hansı ay uçmaq" in chat.last_text()
++    assert "Bakı → hər yerə" in chat.last_text()
+ 
+ 
+ async def test_explore_empty_and_failure(env):
+     env.provider.explore_result = []
+     chat = env.chat(1)
+     await chat.say("/explore")
++    await chat.press("Tək istiqamət")
+     await chat.press(month_label(1))
+     assert "istiqamət tapılmadı" in chat.last_text()
+     env.provider.explore_result = ProviderError("down")
+     chat2 = env.chat(2)
+     await chat2.say("/explore")
++    await chat2.press("Tək istiqamət")
+     await chat2.press(month_label(1))
+     assert "cavab vermir" in chat2.last_text()
+ 
+@@ -483,9 +644,11 @@ async def test_explore_with_changed_origin(env):
+     await chat.press("Bakı · dəyiş")
+     await chat.say("ankara")
+     await chat.press("Ankara")
+-    assert "Ankara" in chat.last_text()
++    assert "Ankara → hər yerə" in chat.last_text()
++    await chat.press("Tək istiqamət")
+     await chat.press(month_label(1))
+     assert "Ankara → hər yerə" in chat.last_text()
++    assert env.provider.explore_last["origin"] == "ESB"
+ 
+ 
+ # ======================================================================== /search
+@@ -495,10 +658,12 @@ async def test_search_shows_cheapest_days_then_can_start_watch(env, sm):
+     await chat.say("/search")
+     assert not any("Hər yerə" in x for x in chat.button_labels())  # no explore button in /search
+     await chat.press("Dubay")
++    assert not any("təqvim" in x for x in chat.button_labels())  # no calendar in /search
++    await chat.press("Tək istiqamət")
+     assert not any("Dəqiq tarix" in x for x in chat.button_labels())  # month selection only
+     await chat.press(month_label(1))
+     result = chat.last_text()
+-    assert "ən ucuz günlər" in result and result.count("•") == 5 and "Bakı → Dubay" in result
++    assert "ən ucuz variantlar" in result and result.count("•") == 5 and "Bakı → Dubay" in result
+     await chat.press("xəbər ver")
+     assert "Hazırda ən ucuz" in chat.last_text()
+     await chat.say("30")
+@@ -506,11 +671,28 @@ async def test_search_shows_cheapest_days_then_can_start_watch(env, sm):
+     assert (r.destination, r.date_mode, r.return_date, r.direct_only) == ("DXB", "month", None, False)
+ 
+ 
++async def test_search_round_trip_shows_departure_and_return_dates(env, sm):
++    env.make(provider=FakeProvider())
++    chat = env.chat()
++    await chat.say("/search")
++    await chat.press("İstanbul")
++    await chat.press("↔️ 6 gün")
++    await chat.press(month_label(2))
++    result = chat.last_text()
++    lines = [x for x in result.splitlines() if x.startswith("•")]
++    assert len(lines) == 5 and all("→" in x for x in lines) and "gediş-dönüş, 6 gün" in result
++    await chat.press("xəbər ver")
++    await chat.say("50")
++    r = (await watch_rows(sm))[0]
++    assert (r.stay_min, r.stay_max, r.date_mode) == (6, 6, "month")
++
++
+ async def test_search_with_no_results(env):
+     env.make(provider=ScriptedProvider(None))
+     chat = env.chat()
+     await chat.say("/search")
+     await chat.press("Dubay")
++    await chat.press("Tək istiqamət")
+     await chat.press(month_label(1))
+     assert "qiymət tapılmadı" in chat.last_text()
+ 
+diff --git a/tests/integration/test_new_features_db.py b/tests/integration/test_new_features_db.py
+index e62b320..1f26afc 100644
+--- a/tests/integration/test_new_features_db.py
++++ b/tests/integration/test_new_features_db.py
+@@ -135,7 +135,7 @@ async def test_explore_is_cached_and_coalesced(redis):
+     assert inner.explore_calls == 1 and all(r[0].destination == "IST" for r in results)
+     await cp.explore(**args)
+     assert inner.explore_calls == 1  # from the cache
+-    assert 0 < await redis.ttl("explore:GYD:2026-12:USD:0") <= 3600
++    assert 0 < await redis.ttl("explore:GYD:2026-12:USD:0:-") <= 3600
+     await cp.explore(**args, fresh=True)
+     assert inner.explore_calls == 2
+ 
+diff --git a/tests/integration/test_poller.py b/tests/integration/test_poller.py
+index 9e585f4..3cf1e37 100644
+--- a/tests/integration/test_poller.py
++++ b/tests/integration/test_poller.py
+@@ -421,3 +421,13 @@ async def test_redis_outage_delays_key_without_counting_failure(sm, settings):
+         <= float(await scalar(sm, "select extract(epoch from (next_check_at - now())) from watch_keys"))
+         <= 90
+     )
++
++
++async def test_round_trip_stay_key_is_polled_and_notifies(sm, settings):
++    u = await make_user(sm, 1)
++    await make_watch(sm, u, key(mode=DateMode.MONTH, days=40, stay=7), 500)
++    prov = ScriptedProvider(100)
++    await poller(sm, prov, settings).run_once()
++    assert prov.calls == 1
++    assert await scalar(sm, "select count(*) from notifications") == 1
++    assert (await rows(sm, "select stay_min, stay_max from watch_keys"))[0] == (7, 7)
+diff --git a/tests/integration/test_ratelimit_and_cache.py b/tests/integration/test_ratelimit_and_cache.py
+index edb07d1..351b74b 100644
+--- a/tests/integration/test_ratelimit_and_cache.py
++++ b/tests/integration/test_ratelimit_and_cache.py
+@@ -4,6 +4,7 @@ from decimal import Decimal
+ 
+ import pytest
+ 
++from flightbot.core.watch_key import DateMode
+ from flightbot.providers.base import PriceQuote, ProviderError
+ from flightbot.providers.wrappers import CachedProvider, RateLimitedProvider
+ from flightbot.ratelimit import RateLimitTimeout, TokenBucket
+@@ -136,3 +137,15 @@ async def test_rate_limited_provider_waits_for_shared_bucket(redis):
+     await asyncio.gather(*(rl.offers(k) for _ in range(6)))  # capacity 20 -> all go through immediately
+     assert time.monotonic() - t0 < 0.5 and inner.calls == 6
+     assert isinstance(PriceQuote, type)
++
++
++async def test_stay_round_trips_cost_two_provider_tokens(redis):
++    inner = ScriptedProvider(100)
++    bucket = TokenBucket(redis)
++    rl = RateLimitedProvider(inner, bucket, rps=10)
++    await rl.offers(key())
++    one_way = float((await redis.hget("rl:provider:scripted", "tokens")).decode())
++    await redis.delete("rl:provider:scripted")
++    await rl.offers(key(days=40, stay=7, mode=DateMode.MONTH))
++    stay = float((await redis.hget("rl:provider:scripted", "tokens")).decode())
++    assert round(10 - one_way) == 1 and round(10 - stay) == 2  # two HTTP requests are paid for
+diff --git a/tests/unit/test_round_trip.py b/tests/unit/test_round_trip.py
+new file mode 100644
+index 0000000..de8a9b3
+--- /dev/null
++++ b/tests/unit/test_round_trip.py
+@@ -0,0 +1,200 @@
++from datetime import date, timedelta
++from decimal import Decimal
++
++import httpx
++import pytest
++
++from flightbot.bot.calendar_kb import calendar_rows, clamp_month, prev_month
++from flightbot.bot.callbacks import CalCb
++from flightbot.core.watch_key import DateMode, InvalidWatch, WatchKey
++from flightbot.providers.base import PriceQuote, filter_by_stay, next_month
++from flightbot.providers.fake import FakeProvider
++from flightbot.providers.travelpayouts import TravelpayoutsProvider
++
++TODAY = date(2026, 10, 31)
++
++
++def mk(**kw):
++    base = dict(origin="GYD", destination="IST", date_mode="month", depart_date=date(2027, 3, 1), today=TODAY)
++    base.update(kw)
++    return WatchKey.create(**base)
++
++
++# ------------------------------------------------------------------ WatchKey with a stay
++def test_stay_key_is_round_trip_and_part_of_the_signature():
++    k7, k14, one_way = mk(stay_min=7, stay_max=7), mk(stay_min=14, stay_max=14), mk()
++    assert k7.is_round_trip and k7.has_stay and not one_way.is_round_trip
++    assert len({k7.cache_id(), k14.cache_id(), one_way.cache_id()}) == 3
++    assert k7 == mk(stay_min=7, stay_max=7)
++
++
++@pytest.mark.parametrize(
++    "kwargs",
++    [
++        {"stay_min": 7},  # both bounds required
++        {"stay_min": 0, "stay_max": 0},
++        {"stay_min": 8, "stay_max": 7},
++        {"stay_min": 31, "stay_max": 31},
++        {"stay_min": 7, "stay_max": 7, "date_mode": "exact", "depart_date": date(2027, 3, 5)},
++        {"stay_min": 7, "stay_max": 7, "return_date": date(2027, 4, 1)},
++    ],
++)
++def test_invalid_stays(kwargs):
++    with pytest.raises(InvalidWatch) as exc:
++        mk(**kwargs)
++    assert exc.value.code == "bad_stay"
++
++
++# ----------------------------------------------------------------------- stay filter
++def q(dep: date, ret: date | None, price: str, dest="IST") -> PriceQuote:
++    return PriceQuote(Decimal(price), "USD", dep, ret, "J2", 0, None, None, "p", destination=dest)
++
++
++def test_filter_by_stay_keeps_matching_trips_sorted_and_deduped():
++    d = date(2027, 3, 10)
++    quotes = [
++        q(d, d + timedelta(days=7), "200"),
++        q(d, d + timedelta(days=7), "200"),  # duplicate
++        q(d, d + timedelta(days=6), "100"),  # wrong stay
++        q(d, None, "50"),  # one way
++        q(date(2027, 4, 2), date(2027, 4, 9), "90"),  # outside the window
++        q(date(2027, 3, 28), date(2027, 4, 4), "150"),  # return in the next month: kept
++    ]
++    out = filter_by_stay(quotes, 7, 7, (date(2027, 3, 1), date(2027, 3, 31)))
++    assert [x.price for x in out] == [Decimal("150"), Decimal("200")]
++
++
++def test_next_month_wraps_the_year():
++    assert next_month(date(2026, 12, 15)) == date(2027, 1, 1)
++    assert prev_month(date(2027, 1, 1)) == date(2026, 12, 1)
++
++
++# ------------------------------------------------- Travelpayouts: round trips by length of stay
++def payload(*rows):
++    return {
++        "success": True,
++        "currency": "usd",
++        "data": [
++            {
++                "destination": dest,
++                "price": p,
++                "airline": "J2",
++                "transfers": 0,
++                "departure_at": f"{dep}T10:00:00+04:00",
++                "return_at": f"{ret}T10:00:00+04:00",
++                "link": "/x",
++            }
++            for dest, p, dep, ret in rows
++        ],
++    }
++
++
++async def test_stay_offers_query_both_return_months_and_filter_by_stay():
++    seen = []
++
++    def handler(req: httpx.Request):
++        seen.append(dict(req.url.params))
++        if req.url.params["return_at"] == "2027-03":
++            return httpx.Response(
++                200,
++                json=payload(
++                    ("IST", 120, "2027-03-05", "2027-03-12"), ("IST", 80, "2027-03-05", "2027-03-08")
++                ),
++            )
++        return httpx.Response(200, json=payload(("IST", 110, "2027-03-27", "2027-04-03")))
++
++    p = TravelpayoutsProvider(httpx.AsyncClient(transport=httpx.MockTransport(handler)), "t")
++    out = await p.offers(mk(stay_min=7, stay_max=7))
++    assert [s["return_at"] for s in seen] == ["2027-03", "2027-04"]  # the return can spill into next month
++    assert all(s["one_way"] == "false" and s["departure_at"] == "2027-03" for s in seen)
++    assert int(seen[0]["limit"]) >= 100
++    assert [(o.price, (o.return_date - o.depart_date).days) for o in out] == [
++        (Decimal("110"), 7),
++        (Decimal("120"), 7),
++    ]
++
++
++async def test_one_way_and_exact_round_trip_still_use_a_single_request():
++    calls = []
++
++    def handler(req):
++        calls.append(dict(req.url.params))
++        return httpx.Response(200, json={"success": True, "data": []})
++
++    p = TravelpayoutsProvider(httpx.AsyncClient(transport=httpx.MockTransport(handler)), "t")
++    await p.offers(mk())
++    await p.offers(mk(date_mode="exact", depart_date=date(2027, 3, 5), return_date=date(2027, 3, 12)))
++    assert len(calls) == 2
++    assert calls[0]["one_way"] == "true" and "return_at" not in calls[0]
++    assert calls[1]["one_way"] == "false" and calls[1]["return_at"] == "2027-03-12"
++
++
++async def test_explore_with_stay_filters_round_trips_per_destination():
++    def handler(req):
++        if req.url.params.get("one_way") != "false":
++            return httpx.Response(400)
++        return httpx.Response(
++            200,
++            json=payload(
++                ("IST", 150, "2027-03-05", "2027-03-12"),
++                ("DXB", 90, "2027-03-05", "2027-03-07"),  # 2 days: filtered out
++                ("TBS", 100, "2027-03-20", "2027-03-27"),
++            ),
++        )
++
++    p = TravelpayoutsProvider(httpx.AsyncClient(transport=httpx.MockTransport(handler)), "t")
++    out = await p.explore(origin="GYD", month=date(2027, 3, 1), currency="USD", stay=(7, 7))
++    assert [(o.destination, o.price) for o in out] == [("TBS", Decimal("100")), ("IST", Decimal("150"))]
++
++
++async def test_fake_provider_honours_the_stay():
++    from datetime import UTC, datetime
++
++    fp = FakeProvider(now_fn=lambda: datetime(2026, 10, 31, 12, tzinfo=UTC))
++    out = await fp.offers(mk(stay_min=5, stay_max=5))
++    assert out and all((o.return_date - o.depart_date).days == 5 for o in out)
++    xs = await fp.explore(origin="GYD", month=date(2027, 3, 1), currency="USD", stay=(7, 7), limit=100)
++    assert xs and all((o.return_date - o.depart_date).days == 7 for o in xs)
++
++
++# ------------------------------------------------------------------------- calendar
++def labels(rows):
++    return [[b.text for b in row] for row in rows]
++
++
++def test_calendar_is_monday_first_and_blocks_days_outside_the_range():
++    rows = calendar_rows("dep", date(2027, 3, 1), "az", min_day=date(2027, 3, 10), max_day=date(2027, 3, 20))
++    lab = labels(rows)
++    assert lab[0] == ["·", "mart 2027", "·"]  # no navigation: the whole range is in March
++    assert lab[1] == ["B.e", "Ç.a", "Ç", "C.a", "C", "Ş", "B"]
++    assert lab[2] == ["·"] * 7  # 1-7 March are before min_day
++    assert lab[3] == ["·", "·", "10", "11", "12", "13", "14"]  # 10 March 2027 is a Wednesday
++    picks = [
++        CalCb.unpack(b.callback_data).v for row in rows for b in row if ":pick:" in (b.callback_data or "")
++    ]
++    assert picks[0] == "20270310" and picks[-1] == "20270320" and len(picks) == 11
++
++
++def test_calendar_first_day_of_month_lands_on_monday_column():
++    rows = calendar_rows("dep", date(2027, 3, 1), "en", min_day=date(2027, 3, 1), max_day=date(2027, 3, 31))
++    assert labels(rows)[2][0] == "1"  # 1 March 2027 is a Monday
++
++
++def test_calendar_navigation_only_within_range():
++    rows = calendar_rows("ret", date(2027, 4, 1), "en", min_day=date(2027, 3, 25), max_day=date(2027, 5, 5))
++    prev_btn, title, next_btn = rows[0]
++    assert prev_btn.text == "‹" and CalCb.unpack(prev_btn.callback_data).v == "202703"
++    assert next_btn.text == "›" and CalCb.unpack(next_btn.callback_data).v == "202705"
++    assert title.text == "April 2027" and labels(rows)[1][0] == "Mo"
++
++
++def test_clamp_month():
++    lo, hi = date(2027, 3, 10), date(2027, 6, 1)
++    assert clamp_month(date(2027, 1, 5), lo, hi) == date(2027, 3, 1)
++    assert clamp_month(date(2027, 9, 5), lo, hi) == date(2027, 6, 1)
++    assert clamp_month(date(2027, 4, 9), lo, hi) == date(2027, 4, 1)
++
++
++def test_watch_key_is_hashable_with_stay():
++    assert len({mk(stay_min=3, stay_max=3), mk(stay_min=3, stay_max=3)}) == 1
++    assert DateMode.MONTH.value == "month"
