@@ -1,5 +1,15 @@
 # TLS for webhook mode (Let's Encrypt, automatic). DOMAIN comes from the environment.
+# Only the Telegram webhook path is proxied; everything else (e.g. /healthz) gets 404 from the outside.
 {$DOMAIN} {
 	encode zstd gzip
-	reverse_proxy bot:8080
+	@webhook {
+		method POST
+		path /telegram/webhook
+	}
+	handle @webhook {
+		reverse_proxy bot:8080
+	}
+	handle {
+		respond 404
+	}
 }

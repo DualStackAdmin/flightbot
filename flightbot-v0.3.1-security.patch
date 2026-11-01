@@ -1,0 +1,872 @@
+diff --git a/.env.example b/.env.example
+index 8e5f620..81f5086 100644
+--- a/.env.example
++++ b/.env.example
+@@ -1,6 +1,7 @@
+ # ===== Required =====
+ BOT_TOKEN=                      # from @BotFather
+-POSTGRES_PASSWORD=change-me     # docker compose only
++POSTGRES_PASSWORD=change-me     # docker compose only; install.sh generates a random one
++REDIS_PASSWORD=change-me        # docker compose only; install.sh generates a random one
+ 
+ # ===== Price provider =====
+ # fake: demo/development without a token (deterministic fake prices)
+@@ -16,6 +17,7 @@ BOT_MODE=polling                # polling (dev) | webhook (prod)
+ WEBHOOK_BASE_URL=               # https://bot.example.com
+ WEBHOOK_SECRET=                 # A-Z a-z 0-9 _ - ; a long random string
+ DOMAIN=                         # for caddy (webhook profile): bot.example.com
++TUNNEL_TOKEN=                   # for cloudflared (tunnel profile): from the Cloudflare dashboard, see docs/CLOUDFLARE.md
+ 
+ # ===== Telegram limits =====
+ TELEGRAM_GLOBAL_RPS=25          # official ~30; keep 5 msg/s of headroom for live replies
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 9bfaf50..d970dac 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -4,6 +4,9 @@ on:
+     branches: [main]
+   pull_request:
+ 
++permissions:
++  contents: read
++
+ jobs:
+   test:
+     runs-on: ubuntu-latest
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+index 0210ac2..770ea5e 100644
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -1,6 +1,7 @@
+ # Optional automatic deploy: after a push to main and a green CI run, ./scripts/update.sh runs on the server.
+ # To enable: GitHub repo -> Settings -> Secrets and variables -> Actions:
+-#   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY (private key), DEPLOY_PATH (e.g. /opt/flightbot)
++#   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY (private key), DEPLOY_PATH (e.g. /opt/flightbot),
++#   DEPLOY_KNOWN_HOSTS (output of `ssh-keyscan <host>`; pins the server key, prevents man-in-the-middle)
+ # If the secrets are not set the job is skipped silently.
+ name: Deploy
+ on:
+@@ -10,6 +11,9 @@ on:
+     branches: [main]
+   workflow_dispatch:
+ 
++permissions:
++  contents: read
++
+ jobs:
+   deploy:
+     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+@@ -22,6 +26,7 @@ jobs:
+           USER_NAME: ${{ secrets.DEPLOY_USER }}
+           KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+           APP_PATH: ${{ secrets.DEPLOY_PATH }}
++          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+         run: |
+           if [ -z "$HOST" ] || [ -z "$KEY" ]; then
+             echo "DEPLOY_* secrets are not set, deploy skipped."
+@@ -30,5 +35,12 @@ jobs:
+           install -m 700 -d ~/.ssh
+           printf '%s\n' "$KEY" > ~/.ssh/deploy_key
+           chmod 600 ~/.ssh/deploy_key
+-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$USER_NAME@$HOST" \
++          if [ -n "$KNOWN_HOSTS" ]; then
++            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
++            HOSTCHECK=yes
++          else
++            echo "::warning::DEPLOY_KNOWN_HOSTS is not set: trusting the server key on first use"
++            HOSTCHECK=accept-new
++          fi
++          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=$HOSTCHECK "$USER_NAME@$HOST" \
+             "cd '${APP_PATH:-/opt/flightbot}' && ./scripts/update.sh"
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 27bf19d..1a78033 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,24 @@
+ 
+ Format: [Keep a Changelog](https://keepachangelog.com/). Versions: [SemVer](https://semver.org/) (0.x = pre-beta).
+ 
++## [0.3.1]
++### Security
++- Secrets are redacted from logs and Sentry events, including tracebacks (Telegram API URLs contain the bot token).
++- Docker: the bot's port is no longer published (internal `expose` only), Prometheus binds to `127.0.0.1`,
++  `POSTGRES_PASSWORD` is required, Redis requires `REDIS_PASSWORD`, app containers are read-only with all capabilities dropped and `no-new-privileges`.
++- New `tunnel` profile: Cloudflare Tunnel (`cloudflared`) publishes the webhook without opening inbound ports (docs/CLOUDFLARE.md).
++- Caddy only proxies `POST /telegram/webhook`.
++- Target prices from buttons are range-checked (callback data can be forged).
++- Provider booking links are only used for trusted hosts over HTTPS.
++- Per-user budget for `/search` and `/explore` (`SEARCH_BURST`, `SEARCH_PER_MINUTE`).
++- CI runs with read-only permissions; the deploy workflow can pin the server host key (`DEPLOY_KNOWN_HOSTS`).
++- `SECURITY.md` with the threat model, findings and open recommendations.
++### Upgrade notes
++- `update.sh` / `install.sh` add a random `REDIS_PASSWORD` to an existing `.env`. If `POSTGRES_PASSWORD` was never set,
++  the old database still uses the password `flightbot`: set `POSTGRES_PASSWORD=flightbot` in `.env` first, then change it
++  inside Postgres (`ALTER USER flightbot PASSWORD '...'`) and in `.env` together.
++- If you published port 8080 directly before, switch to the `tunnel` (recommended) or `webhook` profile.
++
+ ## [0.3.0]
+ ### Added
+ - **Round trips by length of stay:** a trip step right after the destination: one way, round trip of 3/4/5/6/7/14 days, or exact dates on a calendar, plus a "direct only" toggle. The stay is part of the dedup signature (`watch_keys.stay_min/stay_max`, migration `0003`).
+diff --git a/README.md b/README.md
+index cdfa9b9..1f61553 100644
+--- a/README.md
++++ b/README.md
+@@ -5,7 +5,7 @@ Home-city departures, "cheapest day of the month" watches, and an "anywhere" sea
+ 
+ `Python 3.12` · `aiogram 3` · `PostgreSQL 16` · `Redis 7` · `SQLAlchemy 2 (async)` · `Alembic` · `Docker`
+ 
+-> **Status: v0.3.0, pre-beta.** The repository is currently private and proprietary (see [LICENSE](LICENSE)).
++> **Status: v0.3.1, pre-beta.** The repository is currently private and proprietary (see [LICENSE](LICENSE)).
+ > Choose a license before making it public, and read the note on the affiliate marker in [Configuration](#configuration).
+ > See the [CHANGELOG](CHANGELOG.md) and [`docs/LAUNCH_CHECKLIST.md`](docs/LAUNCH_CHECKLIST.md).
+ 
+@@ -50,7 +50,8 @@ make migrate
+ python -m flightbot.bot        # in one terminal
+ python -m flightbot.workers    # in another (poller + broadcaster + janitor)
+ ```
+-Webhook + automatic TLS: set `BOT_MODE=webhook`, `WEBHOOK_BASE_URL`, `WEBHOOK_SECRET` and `DOMAIN` in `.env`, then `docker compose --profile webhook up -d`.
++Webhook mode, recommended: **Cloudflare Tunnel** (no open ports, hidden server IP): set `BOT_MODE=webhook`, `WEBHOOK_BASE_URL` and `TUNNEL_TOKEN`, then `docker compose --profile tunnel up -d` (see [`docs/CLOUDFLARE.md`](docs/CLOUDFLARE.md)).
++Alternative: Caddy with automatic TLS (`DOMAIN`, `docker compose --profile webhook up -d`, opens ports 80/443).
+ Prometheus: `--profile monitoring`.
+ 
+ ## Bot commands
+@@ -107,6 +108,9 @@ The bot end-to-end tests drive the UI in Azerbaijani, so their assertions intent
+ 
+ ## Security
+ 
++See [`SECURITY.md`](SECURITY.md) for the threat model, the v0.3.1 review and open recommendations, and [`docs/CLOUDFLARE.md`](docs/CLOUDFLARE.md) for edge protection.
++
++
+ - `.env` (tokens, passwords) is **never** committed (`.gitignore`); `install.sh` creates it with `chmod 600`.
+ - The repo should stay **private** until you decide otherwise: `./scripts/publish_to_github.sh` creates it private, aborts if it is public, and scans tracked files for tokens before pushing.
+ - Give the server a **read-only** deploy key (`docs/DEPLOY.md`) and use a separate SSH key for CI/CD.
+@@ -149,6 +153,8 @@ docs/          # spec, architecture, ADRs, runbook, deploy, launch checklist, ro
+ | [`docs/DECISIONS.md`](docs/DECISIONS.md) | Architecture decision records (ADRs) and their reasons |
+ | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Runbook: metrics, alerts, incident scenarios, backups |
+ | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Private GitHub repo and Linux server setup |
++| [`docs/CLOUDFLARE.md`](docs/CLOUDFLARE.md) | Cloudflare Tunnel, WAF rules, Access, server firewall |
++| [`SECURITY.md`](SECURITY.md) | Threat model, security review, recommendations |
+ | [`docs/LAUNCH_CHECKLIST.md`](docs/LAUNCH_CHECKLIST.md) | What to verify with real tokens before launch |
+ | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Next steps and known limitations |
+ 
+diff --git a/SECURITY.md b/SECURITY.md
+new file mode 100644
+index 0000000..cab938d
+--- /dev/null
++++ b/SECURITY.md
+@@ -0,0 +1,50 @@
++# Security
++
++## Reporting
++The repository is private. Report a suspected vulnerability directly to the owner; do not open a public issue.
++If a secret leaks, **rotate it first** (BotFather `/revoke`, a new Travelpayouts token, a new tunnel token,
++`WEBHOOK_SECRET`, database passwords), then clean up.
++
++## Threat model (short)
++**Assets:** the Telegram bot token, provider token, tunnel token, user data (Telegram ID, settings, watches),
++affiliate attribution, the server.
++**Entry points:** Telegram updates (webhook or polling), callback data from buttons, provider API responses,
++the server (SSH), CI/CD secrets, the GitHub repository.
++
++## Controls in place
++- Webhook requests must carry `X-Telegram-Bot-Api-Secret-Token` (401 otherwise; tested).
++- Every callback that touches a watch or notification checks ownership; button values (prices, indexes, dates,
++  stays) are re-validated server-side because callback data can be forged by modified clients.
++- All SQL is parameterized; all provider/user-derived text in messages is HTML-escaped.
++- Per-user throttling of updates, and a per-user budget for provider-heavy actions (`/search`, `/explore`).
++- Secrets are redacted from logs and Sentry events (including tracebacks: Telegram API URLs contain the bot token).
++- Booking buttons only use provider links on trusted hosts (`aviasales.com`, `aviasales.ru`) over HTTPS.
++- Docker: no publicly published ports; Postgres and Redis require passwords; app containers are read-only,
++  non-root, with all capabilities dropped and `no-new-privileges`.
++- `.env` is git-ignored and created with `chmod 600`; `publish_to_github.sh` refuses to push tracked secrets or to a public repo.
++- CI runs with read-only repository permissions; the deploy workflow can pin the server's SSH host key.
++- `/delete` erases a user's data.
++
++## v0.3.1 review: findings and fixes
++| # | Severity | Finding | Fix |
++|---|---|---|---|
++| 1 | High | The bot's port 8080 was published on all interfaces, so the webhook and `/healthz` were reachable directly, bypassing TLS | `expose` only (Docker network); public access only via Cloudflare Tunnel or Caddy |
++| 2 | High | Prometheus was published on `0.0.0.0:9090` without authentication | bound to `127.0.0.1`; use an SSH tunnel or Cloudflare Access |
++| 3 | High | Secrets could reach logs/Sentry through exception messages (Telegram API URLs contain the bot token) | redaction processor for logs and Sentry `before_send` |
++| 4 | Medium | `POSTGRES_PASSWORD` silently fell back to `flightbot` | required; `install.sh` generates a random one |
++| 5 | Medium | Redis had no password | `requirepass` with a random `REDIS_PASSWORD` (`install.sh`/`update.sh` add it to old `.env` files) |
++| 6 | Medium | Target prices from buttons were trusted (a forged value could set huge targets) | range validation for target buttons |
++| 7 | Medium | Absolute links from the provider were put into buttons unchecked (phishing vector if the API is compromised) | host allowlist + HTTPS; otherwise our own search URL |
++| 8 | Medium | No per-user limit on provider-heavy actions (one user/script could burn the shared API quota) | per-user token bucket for `/search` and `/explore` (`SEARCH_BURST`, `SEARCH_PER_MINUTE`) |
++| 9 | Low | Containers ran with default capabilities and a writable filesystem | read-only, `cap_drop: ALL`, `no-new-privileges`, tmpfs `/tmp` |
++| 10 | Low | Caddy proxied every path (incl. `/healthz`) | only `POST /telegram/webhook` is proxied |
++| 11 | Low | CI used default token permissions; deploy trusted the host key on first use | `permissions: contents: read`; optional `DEPLOY_KNOWN_HOSTS` |
++| 12 | Ops | A GitHub token was shared in a chat during setup | must be revoked (GitHub → Settings → Developer settings → Tokens) |
++
++## Not done yet (recommended)
++- **Dependency pinning:** add a lock file (e.g. `pip-tools`/`uv`) and pin base images by digest; Dependabot is already enabled.
++- **Pin `cloudflared`** to a specific version tag in `docker-compose.yml` (currently `latest`, marked TODO).
++- **Docker secrets** instead of environment variables for tokens (env vars are visible to `docker inspect`).
++- **2FA** on GitHub, Cloudflare, the Telegram account that owns the bot, Travelpayouts and the server provider.
++- **Encrypted, off-site Postgres backups** and a tested restore.
++- Verify the Telegram webhook IP ranges before enabling the WAF allowlist rule (docs/CLOUDFLARE.md).
+diff --git a/deploy/Caddyfile b/deploy/Caddyfile
+index ae8acfd..dfc52c7 100644
+--- a/deploy/Caddyfile
++++ b/deploy/Caddyfile
+@@ -1,5 +1,15 @@
+ # TLS for webhook mode (Let's Encrypt, automatic). DOMAIN comes from the environment.
++# Only the Telegram webhook path is proxied; everything else (e.g. /healthz) gets 404 from the outside.
+ {$DOMAIN} {
+ 	encode zstd gzip
+-	reverse_proxy bot:8080
++	@webhook {
++		method POST
++		path /telegram/webhook
++	}
++	handle @webhook {
++		reverse_proxy bot:8080
++	}
++	handle {
++		respond 404
++	}
+ }
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 35ff95b..ac3771e 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -1,23 +1,39 @@
+-# One command: cp .env.example .env && docker compose up -d --build
+-# Webhook + TLS:      docker compose --profile webhook up -d
+-# Prometheus:         docker compose --profile monitoring up -d
++# One command: ./scripts/install.sh   (or: cp .env.example .env, fill it in, docker compose up -d --build)
++# Public webhook via Cloudflare Tunnel (recommended, no open ports):  docker compose --profile tunnel up -d
++# Public webhook via Caddy with your own TLS (opens 80/443):         docker compose --profile webhook up -d
++# Prometheus (bound to localhost only):                              docker compose --profile monitoring up -d
++#
++# Security defaults: no service publishes a port to the internet, Postgres/Redis require passwords from .env,
++# app containers run read-only, as a non-root user, without Linux capabilities and without privilege escalation.
+ name: flightbot
+ 
++x-hardening: &hardening
++  security_opt:
++    - no-new-privileges:true
++  cap_drop:
++    - ALL
++
+ x-app: &app
++  <<: *hardening
+   build: .
+   env_file: .env
+   environment: &app-env
+-    DATABASE_URL: postgresql+asyncpg://flightbot:${POSTGRES_PASSWORD:-flightbot}@postgres:5432/flightbot
+-    REDIS_URL: redis://redis:6379/0
++    DATABASE_URL: postgresql+asyncpg://flightbot:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/flightbot
++    REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379/0
+     LOG_JSON: "true"
++  read_only: true
++  tmpfs:
++    - /tmp
+   restart: unless-stopped
+ 
+ services:
+   postgres:
+     image: postgres:16-alpine
++    security_opt:
++      - no-new-privileges:true
+     environment:
+       POSTGRES_USER: flightbot
+-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flightbot}
++      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+       POSTGRES_DB: flightbot
+     volumes:
+       - pgdata:/var/lib/postgresql/data
+@@ -32,11 +48,18 @@ services:
+   # volatile-lru: only keys with a TTL can be evicted (all of our keys have one).
+   redis:
+     image: redis:7-alpine
+-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
++    security_opt:
++      - no-new-privileges:true
++    environment:
++      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
++    command:
++      - sh
++      - -c
++      - exec redis-server --requirepass "$$REDIS_PASSWORD" --appendonly yes --maxmemory 256mb --maxmemory-policy volatile-lru
+     volumes:
+       - redisdata:/data
+     healthcheck:
+-      test: ["CMD", "redis-cli", "ping"]
++      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+       interval: 5s
+       timeout: 3s
+       retries: 20
+@@ -50,11 +73,13 @@ services:
+       postgres:
+         condition: service_healthy
+ 
++  # The webhook server listens on 8080 inside the Docker network only (no published port).
++  # cloudflared or caddy reach it as http://bot:8080.
+   bot:
+     <<: *app
+     command: ["python", "-m", "flightbot.bot"]
+-    ports:
+-      - "8080:8080"
++    expose:
++      - "8080"
+     depends_on:
+       migrate:
+         condition: service_completed_successfully
+@@ -82,6 +107,22 @@ services:
+       timeout: 5s
+       retries: 3
+ 
++  # Cloudflare Tunnel: an outbound-only connection to Cloudflare. The server needs no open inbound ports and its IP
++  # stays hidden. Configure the public hostname -> http://bot:8080 in the Cloudflare dashboard (docs/CLOUDFLARE.md).
++  # TODO: pin a specific cloudflared version tag (check Docker Hub) instead of "latest".
++  cloudflared:
++    <<: *hardening
++    image: cloudflare/cloudflared:latest
++    profiles: ["tunnel"]
++    command: ["tunnel", "--no-autoupdate", "run"]
++    environment:
++      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN for the tunnel profile}
++    read_only: true
++    depends_on:
++      - bot
++    restart: unless-stopped
++
++  # Alternative to the tunnel: Caddy with automatic Let's Encrypt TLS (publishes ports 80/443).
+   caddy:
+     image: caddy:2
+     profiles: ["webhook"]
+@@ -104,7 +145,7 @@ services:
+       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+       - ./deploy/alerts.yml:/etc/prometheus/alerts.yml:ro
+     ports:
+-      - "9090:9090"
++      - "127.0.0.1:9090:9090"   # localhost only: reach it with an SSH tunnel or Cloudflare Access, never publicly
+     depends_on:
+       - bot
+       - worker
+diff --git a/docs/CLOUDFLARE.md b/docs/CLOUDFLARE.md
+new file mode 100644
+index 0000000..e0d8b32
+--- /dev/null
++++ b/docs/CLOUDFLARE.md
+@@ -0,0 +1,85 @@
++# Cloudflare setup (recommended for webhook mode)
++
++Goal: the server has **no inbound ports open to the internet** (except SSH, ideally restricted), its IP stays hidden,
++and only Telegram can reach the webhook. Nothing in this guide was tested against a live Cloudflare account while
++it was written; product names, dashboard paths and plan availability can change, so check the linked docs.
++
++| Need | Cloudflare product | Why |
++|---|---|---|
++| Publish the webhook without opening ports or exposing the server IP | **Tunnel** (`cloudflared`) | outbound-only connection from the server to Cloudflare |
++| Only Telegram may call the webhook, only `POST /telegram/webhook` | **WAF custom rules** | blocks scanners and direct abuse at the edge |
++| Absorb floods | **DDoS protection** (on by default for proxied traffic) | |
++| Private dashboards (Prometheus/Grafana), optional SSH | **Access** (Cloudflare One) | identity login in front of internal tools |
++
++Docs: [Tunnel](https://developers.cloudflare.com/tunnel/) · [WAF custom rules](https://developers.cloudflare.com/waf/custom-rules/) ·
++[Access](https://developers.cloudflare.com/cloudflare-one/access-controls/) · [DDoS](https://developers.cloudflare.com/ddos-protection/)
++
++## 1. Domain on Cloudflare
++Add your domain to Cloudflare (DNS managed by Cloudflare). Pick a hostname for the bot, e.g. `bot.example.com`.
++
++## 2. Create the tunnel (remotely managed)
++1. Cloudflare dashboard → Zero Trust / Networks → **Tunnels** → Create a tunnel → type *cloudflared*.
++2. Copy the **tunnel token** into `.env`: `TUNNEL_TOKEN=...` (it is a secret: never commit it; rotate it if it leaks).
++3. Add a **public hostname / published application route**:
++   - Hostname: `bot.example.com`
++   - Path: `^/telegram/webhook$` (only this path is routed; everything else returns 404 at the edge)
++   - Service: `http://bot:8080` (the container name inside the Docker network)
++4. In `.env`:
++   ```
++   BOT_MODE=webhook
++   WEBHOOK_BASE_URL=https://bot.example.com
++   WEBHOOK_SECRET=<long random, install.sh generates one>
++   ```
++5. Start: `docker compose --profile tunnel up -d`. Do **not** also start the `webhook` (Caddy) profile.
++
++Telegram requires HTTPS with a valid certificate on port 443: the tunnel's public hostname provides that.
++The bot verifies `X-Telegram-Bot-Api-Secret-Token` on every update (a wrong secret returns 401).
++
++## 3. WAF custom rules (Security → WAF → Custom rules)
++Replace `bot.example.com` and the path if you changed them.
++
++**Rule A: only the webhook endpoint exists** (action: *Block*)
++```
++(http.host eq "bot.example.com" and not (http.request.uri.path eq "/telegram/webhook" and http.request.method eq "POST"))
++```
++
++**Rule B: only Telegram may call it** (action: *Block*)
++```
++(http.host eq "bot.example.com" and not ip.src in {149.154.160.0/20 91.108.4.0/22})
++```
++These are the subnets Telegram documents as the source of webhook requests. **Check Telegram's current Bot API docs
++before enabling the rule**; if Telegram adds a range and the rule blocks it, updates stop arriving (watch
++`getWebhookInfo` → `last_error_message`).
++
++**Do not challenge the webhook.** Telegram cannot solve a JS challenge or CAPTCHA. If you enable Bot Fight Mode,
++"Under Attack" mode or managed challenges on the zone, add a *Skip* rule for
++`http.host eq "bot.example.com" and http.request.uri.path eq "/telegram/webhook" and ip.src in {149.154.160.0/20 91.108.4.0/22}`,
++or keep this hostname out of those features.
++
++Optional: a rate limiting rule on the webhook path (e.g. by IP). Telegram delivers updates from a few addresses at high
++rates, so set it generously or skip it; the bot already throttles per user.
++
++## 4. Server firewall
++With the tunnel the server needs no inbound HTTP(S):
++```bash
++sudo ufw default deny incoming
++sudo ufw default allow outgoing
++sudo ufw allow from <your-ip> to any port 22 proto tcp   # or: sudo ufw allow 22/tcp
++sudo ufw enable
++```
++Docker-published ports bypass `ufw`. That's why `docker-compose.yml` publishes nothing publicly (Prometheus is bound to
++`127.0.0.1`). Keep it that way when you edit the file.
++
++SSH: key-only login (`PasswordAuthentication no`), no root login. Optionally put SSH behind Cloudflare Access
++(SSH through the tunnel) and close port 22 entirely; see the Access docs.
++
++## 5. Dashboards with Access (optional)
++To open Prometheus from the browser, add a second public hostname (e.g. `metrics.example.com` → `http://prometheus:9090`)
++and protect it with an **Access application** (policy: your e-mail). Without Access, keep using an SSH tunnel:
++`ssh -L 9090:127.0.0.1:9090 user@server`.
++
++## 6. Checklist
++- [ ] `getWebhookInfo` shows the tunnel URL and no `last_error_message`
++- [ ] From any other IP, `curl -X POST https://bot.example.com/telegram/webhook` is blocked (403) and `/healthz` is 404/403
++- [ ] `nmap <server-ip>` shows only SSH (or nothing)
++- [ ] `TUNNEL_TOKEN`, `BOT_TOKEN`, `WEBHOOK_SECRET` exist only in `.env` (chmod 600) and in your password manager
+diff --git a/pyproject.toml b/pyproject.toml
+index 89eccb1..9aa548f 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "flightbot"
+-version = "0.3.0"
++version = "0.3.1"
+ description = "Telegram flight price tracking platform (watch-key dedup, transactional outbox, rate-limited broadcaster)"
+ requires-python = ">=3.12"
+ dependencies = [
+diff --git a/scripts/install.sh b/scripts/install.sh
+index d6a7ccf..cd5651b 100755
+--- a/scripts/install.sh
++++ b/scripts/install.sh
+@@ -70,6 +70,7 @@ else
+   set_env BOT_TOKEN "$token"
+ 
+   set_env POSTGRES_PASSWORD "$(rand_hex)"
++  set_env REDIS_PASSWORD "$(rand_hex)"
+   set_env WEBHOOK_SECRET "$(rand_hex)"
+   set_env ENV prod
+ 
+@@ -85,6 +86,13 @@ else
+ fi
+ 
+ [ -n "$(get_env BOT_TOKEN)" ] || die "BOT_TOKEN is empty in .env"
++if [ -z "$(get_env REDIS_PASSWORD)" ] || [ "$(get_env REDIS_PASSWORD)" = "change-me" ]; then
++  say "Adding a random REDIS_PASSWORD to .env (Redis now requires a password)"
++  set_env REDIS_PASSWORD "$(rand_hex)"
++fi
++if [ "$(get_env POSTGRES_PASSWORD)" = "change-me" ]; then
++  warn "POSTGRES_PASSWORD is still 'change-me'. For an existing database change it inside Postgres first (ALTER USER), then in .env."
++fi
+ 
+ if [ "$DRY_RUN" = 1 ]; then
+   say "DRY-RUN: .env is ready, Docker steps skipped."
+diff --git a/scripts/update.sh b/scripts/update.sh
+index 614d781..1e35f39 100755
+--- a/scripts/update.sh
++++ b/scripts/update.sh
+@@ -18,6 +18,12 @@ fi
+ 
+ echo "==> ${local_rev:0:7} -> ${remote_rev:0:7}"
+ git pull --ff-only
++# v0.3.1+: Redis requires a password. Older .env files don't have one yet.
++if ! grep -qE '^REDIS_PASSWORD=.+' .env; then
++  pw="$(openssl rand -hex 16 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(16))')"
++  printf 'REDIS_PASSWORD=%s\n' "$pw" >> .env
++  echo "==> added a random REDIS_PASSWORD to .env"
++fi
+ dc up -d --build
+ echo "==> migration log:"
+ dc logs migrate --tail=20 || true
+diff --git a/src/flightbot/__init__.py b/src/flightbot/__init__.py
+index 0e87840..b47ea3c 100644
+--- a/src/flightbot/__init__.py
++++ b/src/flightbot/__init__.py
+@@ -1,3 +1,3 @@
+ """FlightBot: a Telegram flight price tracking platform."""
+ 
+-__version__ = "0.3.0"
++__version__ = "0.3.1"
+diff --git a/src/flightbot/bot/app.py b/src/flightbot/bot/app.py
+index 749a39e..e562237 100644
+--- a/src/flightbot/bot/app.py
++++ b/src/flightbot/bot/app.py
+@@ -24,12 +24,13 @@ from flightbot.bot.i18n import SUPPORTED, t
+ from flightbot.bot.middlewares import DbSessionMiddleware, ThrottlingMiddleware, UserMiddleware
+ from flightbot.config import Settings, get_settings
+ from flightbot.db.session import create_engine, create_sessionmaker
+-from flightbot.logging import get_logger, setup_logging
++from flightbot.logging import get_logger, sentry_before_send, setup_logging
+ from flightbot.metrics import start_metrics_server
+ from flightbot.providers.base import PriceProvider
+ from flightbot.providers.factory import build_http_client, build_names, build_places, build_provider
+ from flightbot.providers.names import PlaceNames
+ from flightbot.providers.places import PlacesProvider
++from flightbot.ratelimit import TokenBucket
+ 
+ log = get_logger(__name__)
+ COMMANDS = ("new", "explore", "list", "search", "settings", "help", "delete", "cancel")
+@@ -61,7 +62,9 @@ def create_dispatcher(
+     storage = RedisStorage(
+         redis, key_builder=DefaultKeyBuilder(prefix="fsm"), state_ttl=FSM_TTL, data_ttl=FSM_TTL
+     )
+-    deps = Deps(provider, places, names or PlaceNames(None, None, remote=False), settings)
++    deps = Deps(
++        provider, places, names or PlaceNames(None, None, remote=False), settings, limiter=TokenBucket(redis)
++    )
+     dp = Dispatcher(storage=storage, settings=settings, deps=deps)
+     # Order matters: throttle (cheap) -> DB session -> user
+     dp.update.outer_middleware(ThrottlingMiddleware(redis, rate=throttle[0], burst=throttle[1]))
+@@ -147,14 +150,28 @@ async def run_webhook(
+ 
+ async def amain() -> None:
+     settings = get_settings()
+-    setup_logging(settings.log_level, settings.log_json)
++    setup_logging(
++        settings.log_level,
++        settings.log_json,
++        secrets=[
++            settings.bot_token.get_secret_value(),
++            settings.travelpayouts_token.get_secret_value(),
++            settings.webhook_secret.get_secret_value(),
++        ],
++    )
+     token = settings.bot_token.get_secret_value()
+     if not token:
+         raise SystemExit("BOT_TOKEN is not set (see the .env file)")
+     if settings.sentry_dsn:
+         import sentry_sdk
+ 
+-        sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.env, release=__version__)
++        sentry_sdk.init(
++            dsn=settings.sentry_dsn,
++            environment=settings.env,
++            release=__version__,
++            send_default_pii=False,
++            before_send=sentry_before_send,
++        )
+     start_metrics_server(settings.metrics_port)
+ 
+     engine = create_engine(settings)
+diff --git a/src/flightbot/bot/deps.py b/src/flightbot/bot/deps.py
+index 83f192e..3abd3c7 100644
+--- a/src/flightbot/bot/deps.py
++++ b/src/flightbot/bot/deps.py
+@@ -4,6 +4,7 @@ from flightbot.config import Settings
+ from flightbot.providers.base import PriceProvider
+ from flightbot.providers.names import PlaceNames
+ from flightbot.providers.places import PlacesProvider
++from flightbot.ratelimit import TokenBucket
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+@@ -14,3 +15,4 @@ class Deps:
+     places: PlacesProvider
+     names: PlaceNames
+     settings: Settings
++    limiter: TokenBucket | None = None  # per-user budget for provider-heavy actions
+diff --git a/src/flightbot/bot/handlers/flow.py b/src/flightbot/bot/handlers/flow.py
+index cf811ea..61f33ac 100644
+--- a/src/flightbot/bot/handlers/flow.py
++++ b/src/flightbot/bot/handlers/flow.py
+@@ -15,6 +15,7 @@ from aiogram import F, Router
+ from aiogram.filters import Command, StateFilter
+ from aiogram.fsm.context import FSMContext
+ from aiogram.types import CallbackQuery, Message
++from redis.exceptions import RedisError
+ from sqlalchemy.ext.asyncio import AsyncSession
+ 
+ from flightbot.bot import keyboards as kb
+@@ -33,7 +34,7 @@ from flightbot.bot.callbacks import (
+ from flightbot.bot.deps import Deps
+ from flightbot.bot.formatting import describe_key
+ from flightbot.bot.i18n import esc, fmt_date, fmt_month, fmt_price, t
+-from flightbot.bot.parsing import next_months, parse_month_token, parse_price, parse_user_date
++from flightbot.bot.parsing import MAX_PRICE, next_months, parse_month_token, parse_price, parse_user_date
+ from flightbot.bot.render import route_title, stops_text
+ from flightbot.bot.states import Flow
+ from flightbot.bot.ui import edit_or_send, show
+@@ -153,6 +154,26 @@ def _dates_label(depart: date, ret: date | None, lang: str) -> str:
+     return f"{fmt_date(depart, lang)} → {fmt_date(ret, lang)}" if ret else fmt_date(depart, lang)
+ 
+ 
++async def provider_budget_ok(c: Ctx) -> bool:
++    """Per-user budget for actions that query the provider (/search, /explore): protects the shared provider quota
++    from one user or a script hammering the bot. Fails open if Redis is unavailable."""
++    limiter, st = c.deps.limiter, c.deps.settings
++    if limiter is None:
++        return True
++    try:
++        wait = await limiter.acquire(
++            f"budget:{c.user.telegram_id}", rate=st.search_per_minute / 60.0, capacity=st.search_burst
++        )
++    except RedisError:
++        return True
++    return wait <= 0
++
++
++def valid_target(price: Decimal) -> bool:
++    """Callback data can be forged by a modified client: never trust a price that came from a button."""
++    return Decimal("0") < price <= MAX_PRICE
++
++
+ # ================================================================== step engine
+ async def goto(c: Ctx, step: str, *, push: bool = True, text: str | None = None) -> None:
+     d = await c.state.get_data()
+@@ -496,10 +517,13 @@ async def pick_month(
+     if month is None or month < _today().replace(day=1):
+         await cb.answer(tr("invalid.date_in_past"), show_alert=True)
+         return
+-    await cb.answer()
+-    await state.update_data(depart=month.isoformat(), mode="month", hint_price=None)
+     c = _ctx(cb, state, user, session, tr, deps)
+     d = await state.get_data()
++    if d.get("purpose") == "search" and not await provider_budget_ok(c):
++        await cb.answer(tr("error.slow_down"), show_alert=True)
++        return
++    await cb.answer()
++    await state.update_data(depart=month.isoformat(), mode="month", hint_price=None)
+     if d.get("purpose") == "search":
+         await run_search(c)
+     else:
+@@ -654,10 +678,14 @@ async def target_button(
+     tr,
+     deps: Deps,
+ ) -> None:
++    price = Decimal(callback_data.cents) / 100
++    if not valid_target(price):
++        await cb.answer(tr("error.stale"), show_alert=True)
++        return
+     await cb.answer()
+     await handle_target(
+         _ctx(cb, state, user, session, tr, deps),
+-        Decimal(callback_data.cents) / 100,
++        price,
+         force=bool(callback_data.force),
+     )
+ 
+@@ -812,8 +840,11 @@ async def pick_explore_month(
+     if month is None or month < _today().replace(day=1):
+         await cb.answer(tr("invalid.date_in_past"), show_alert=True)
+         return
+-    await cb.answer()
+     c = _ctx(cb, state, user, session, tr, deps)
++    if not await provider_budget_ok(c):
++        await cb.answer(tr("error.slow_down"), show_alert=True)
++        return
++    await cb.answer()
+     d = await state.get_data()
+     origin = _origin(d, c)
+     stay = _stay(d)
+diff --git a/src/flightbot/bot/handlers/watches_list.py b/src/flightbot/bot/handlers/watches_list.py
+index 3ce1730..3ffda0b 100644
+--- a/src/flightbot/bot/handlers/watches_list.py
++++ b/src/flightbot/bot/handlers/watches_list.py
+@@ -10,7 +10,7 @@ from flightbot.bot import keyboards as kb
+ from flightbot.bot.callbacks import EditTargetCb, MenuCb, WatchCb
+ from flightbot.bot.formatting import describe_key
+ from flightbot.bot.i18n import esc, fmt_price
+-from flightbot.bot.parsing import parse_price
++from flightbot.bot.parsing import MAX_PRICE, parse_price
+ from flightbot.bot.states import Flow
+ from flightbot.bot.ui import edit_or_send
+ from flightbot.core.clock import utcnow
+@@ -133,8 +133,12 @@ async def _save_target(
+ async def edit_target_button(
+     cb: CallbackQuery, callback_data: EditTargetCb, state: FSMContext, user: User, session: AsyncSession, tr
+ ) -> None:
++    price = Decimal(callback_data.cents) / 100
++    if not Decimal("0") < price <= MAX_PRICE:  # callback data can be forged by a modified client
++        await cb.answer(tr("error.stale"), show_alert=True)
++        return
+     await cb.answer()
+-    await _save_target(cb, state, user, session, tr, Decimal(callback_data.cents) / 100)
++    await _save_target(cb, state, user, session, tr, price)
+ 
+ 
+ @router.message(Flow.edit_target, F.text, ~F.text.startswith("/"))
+diff --git a/src/flightbot/config.py b/src/flightbot/config.py
+index dbaf580..4621ee4 100644
+--- a/src/flightbot/config.py
++++ b/src/flightbot/config.py
+@@ -65,6 +65,10 @@ class Settings(BaseSettings):
+     quiet_start_hour: int = 23
+     quiet_end_hour: int = 8
+ 
++    # --- Abuse protection: /search and /explore hit the provider, so they get a per-user budget ---
++    search_burst: int = 10
++    search_per_minute: float = 2.0
++
+     # --- Product ---
+     default_language: Literal["az", "ru", "en"] = "az"
+     default_home_iata: str = "GYD"
+diff --git a/src/flightbot/core/affiliate.py b/src/flightbot/core/affiliate.py
+index e92a778..ff17095 100644
+--- a/src/flightbot/core/affiliate.py
++++ b/src/flightbot/core/affiliate.py
+@@ -9,6 +9,16 @@ from datetime import date
+ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+ 
+ AVIASALES_BASE = "https://www.aviasales.com"
++# Absolute links from the provider are only used if they point to these hosts (over https).
++# Anything else (a compromised or malformed API response) falls back to our own search URL, so a
++# phishing link can never end up behind the "Find ticket" button.
++TRUSTED_BOOKING_HOSTS = ("aviasales.com", "aviasales.ru")
++
++
++def is_trusted_booking_url(url: str) -> bool:
++    parts = urlparse(url)
++    host = (parts.hostname or "").lower()
++    return parts.scheme == "https" and any(host == h or host.endswith("." + h) for h in TRUSTED_BOOKING_HOSTS)
+ 
+ 
+ def fallback_search_path(
+@@ -31,9 +41,9 @@ def build_booking_link(
+     sub_id: str | None = None,
+     base: str = AVIASALES_BASE,
+ ) -> str:
+-    if link_path and link_path.startswith(("http://", "https://")):
++    if link_path and link_path.startswith(("http://", "https://")) and is_trusted_booking_url(link_path):
+         url = link_path
+-    elif link_path and link_path.startswith("/"):
++    elif link_path and link_path.startswith("/") and not link_path.startswith("//"):
+         url = base + link_path
+     else:
+         url = base + fallback_search_path(origin, destination, depart_date, return_date)
+diff --git a/src/flightbot/logging.py b/src/flightbot/logging.py
+index d0b8645..cbe459f 100644
+--- a/src/flightbot/logging.py
++++ b/src/flightbot/logging.py
+@@ -1,12 +1,59 @@
+-"""Structured logging (structlog)."""
++"""Structured logging (structlog) with secret redaction.
++
++Secrets (bot token, provider token, webhook secret) and anything shaped like a Telegram bot token are replaced
++with "***" in every log line and in Sentry events, including formatted exception tracebacks. Telegram API URLs
++contain the bot token (`/bot<TOKEN>/method`), so network errors would otherwise leak it.
++"""
+ 
+ import logging
++import re
+ import sys
++from collections.abc import Iterable
++from typing import Any
+ 
+ import structlog
+ 
++TELEGRAM_TOKEN_RE = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b")
++REDACTED = "***"
++_secrets: list[str] = []
++
++
++def set_secrets(secrets: Iterable[str | None]) -> None:
++    """Register secret values to redact. Short values are ignored to avoid mangling ordinary text."""
++    _secrets[:] = sorted({s for s in secrets if s and len(s) >= 8}, key=len, reverse=True)
++
++
++def redact_text(text: str) -> str:
++    for s in _secrets:
++        if s in text:
++            text = text.replace(s, REDACTED)
++    return TELEGRAM_TOKEN_RE.sub(REDACTED, text)
++
++
++def _redact_value(value: Any) -> Any:
++    if isinstance(value, str):
++        return redact_text(value)
++    if isinstance(value, dict):
++        return {k: _redact_value(v) for k, v in value.items()}
++    if isinstance(value, list | tuple):
++        return type(value)(_redact_value(v) for v in value)
++    return value
++
++
++def redact_processor(_logger, _method, event_dict: dict) -> dict:
++    for key, value in list(event_dict.items()):
++        if not key.startswith("_"):
++            event_dict[key] = _redact_value(value)
++    return event_dict
++
++
++def sentry_before_send(event: dict, _hint: dict) -> dict:
++    """Sentry hook: scrub secrets from the whole event (messages, exception values, breadcrumbs, request URLs)."""
++    return _redact_value(event)
++
+ 
+-def setup_logging(level: str = "INFO", json_logs: bool = False) -> None:
++def setup_logging(level: str = "INFO", json_logs: bool = False, secrets: Iterable[str | None] = ()) -> None:
++    set_secrets(secrets)
+     timestamper = structlog.processors.TimeStamper(fmt="iso", utc=True)
+     shared = [
+         structlog.contextvars.merge_contextvars,
+@@ -28,7 +75,13 @@ def setup_logging(level: str = "INFO", json_logs: bool = False) -> None:
+     handler.setFormatter(
+         structlog.stdlib.ProcessorFormatter(
+             foreign_pre_chain=shared,
+-            processors=[structlog.stdlib.ProcessorFormatter.remove_processors_meta, renderer],
++            processors=[
++                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
++                # Render tracebacks to text first, so the redactor also sees exception messages and URLs
++                structlog.processors.format_exc_info,
++                redact_processor,
++                renderer,
++            ],
+         )
+     )
+     root = logging.getLogger()
+diff --git a/src/flightbot/workers/main.py b/src/flightbot/workers/main.py
+index 98fb356..5b02564 100644
+--- a/src/flightbot/workers/main.py
++++ b/src/flightbot/workers/main.py
+@@ -15,7 +15,7 @@ from flightbot import __version__
+ from flightbot.config import get_settings
+ from flightbot.core.clock import utcnow
+ from flightbot.db.session import create_engine, create_sessionmaker
+-from flightbot.logging import get_logger, setup_logging
++from flightbot.logging import get_logger, sentry_before_send, setup_logging
+ from flightbot.metrics import start_metrics_server
+ from flightbot.providers.factory import build_http_client, build_provider
+ from flightbot.workers import janitor
+@@ -27,12 +27,26 @@ ALL_ROLES = ("poller", "broadcaster", "janitor")
+ 
+ async def amain(roles: set[str]) -> None:
+     settings = get_settings()
+-    setup_logging(settings.log_level, settings.log_json)
++    setup_logging(
++        settings.log_level,
++        settings.log_json,
++        secrets=[
++            settings.bot_token.get_secret_value(),
++            settings.travelpayouts_token.get_secret_value(),
++            settings.webhook_secret.get_secret_value(),
++        ],
++    )
+     log = get_logger("worker")
+     if settings.sentry_dsn:
+         import sentry_sdk
+ 
+-        sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.env, release=__version__)
++        sentry_sdk.init(
++            dsn=settings.sentry_dsn,
++            environment=settings.env,
++            release=__version__,
++            send_default_pii=False,
++            before_send=sentry_before_send,
++        )
+     start_metrics_server(settings.metrics_port)
+ 
+     engine = create_engine(settings)

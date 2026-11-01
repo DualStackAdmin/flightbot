@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     quiet_start_hour: int = 23
     quiet_end_hour: int = 8
 
+    # --- Abuse protection: /search and /explore hit the provider, so they get a per-user budget ---
+    search_burst: int = 10
+    search_per_minute: float = 2.0
+
     # --- Product ---
     default_language: Literal["az", "ru", "en"] = "az"
     default_home_iata: str = "GYD"

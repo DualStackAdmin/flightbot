@@ -15,7 +15,7 @@ from flightbot import __version__
 from flightbot.config import get_settings
 from flightbot.core.clock import utcnow
 from flightbot.db.session import create_engine, create_sessionmaker
-from flightbot.logging import get_logger, setup_logging
+from flightbot.logging import get_logger, sentry_before_send, setup_logging
 from flightbot.metrics import start_metrics_server
 from flightbot.providers.factory import build_http_client, build_provider
 from flightbot.workers import janitor
@@ -27,12 +27,26 @@ ALL_ROLES = ("poller", "broadcaster", "janitor")
 
 async def amain(roles: set[str]) -> None:
     settings = get_settings()
-    setup_logging(settings.log_level, settings.log_json)
+    setup_logging(
+        settings.log_level,
+        settings.log_json,
+        secrets=[
+            settings.bot_token.get_secret_value(),
+            settings.travelpayouts_token.get_secret_value(),
+            settings.webhook_secret.get_secret_value(),
+        ],
+    )
     log = get_logger("worker")
     if settings.sentry_dsn:
         import sentry_sdk
 
-        sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.env, release=__version__)
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            environment=settings.env,
+            release=__version__,
+            send_default_pii=False,
+            before_send=sentry_before_send,
+        )
     start_metrics_server(settings.metrics_port)
 
     engine = create_engine(settings)

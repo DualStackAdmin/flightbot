@@ -4,6 +4,7 @@ from flightbot.config import Settings
 from flightbot.providers.base import PriceProvider
 from flightbot.providers.names import PlaceNames
 from flightbot.providers.places import PlacesProvider
+from flightbot.ratelimit import TokenBucket
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,3 +15,4 @@ class Deps:
     places: PlacesProvider
     names: PlaceNames
     settings: Settings
+    limiter: TokenBucket | None = None  # per-user budget for provider-heavy actions

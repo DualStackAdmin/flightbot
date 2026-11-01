@@ -15,6 +15,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from flightbot.bot import keyboards as kb
@@ -33,7 +34,7 @@ from flightbot.bot.callbacks import (
 from flightbot.bot.deps import Deps
 from flightbot.bot.formatting import describe_key
 from flightbot.bot.i18n import esc, fmt_date, fmt_month, fmt_price, t
-from flightbot.bot.parsing import next_months, parse_month_token, parse_price, parse_user_date
+from flightbot.bot.parsing import MAX_PRICE, next_months, parse_month_token, parse_price, parse_user_date
 from flightbot.bot.render import route_title, stops_text
 from flightbot.bot.states import Flow
 from flightbot.bot.ui import edit_or_send, show
@@ -151,6 +152,26 @@ def _date_error(d: date, today: date, not_before: date | None = None) -> str | N
 
 def _dates_label(depart: date, ret: date | None, lang: str) -> str:
     return f"{fmt_date(depart, lang)} → {fmt_date(ret, lang)}" if ret else fmt_date(depart, lang)
+
+
+async def provider_budget_ok(c: Ctx) -> bool:
+    """Per-user budget for actions that query the provider (/search, /explore): protects the shared provider quota
+    from one user or a script hammering the bot. Fails open if Redis is unavailable."""
+    limiter, st = c.deps.limiter, c.deps.settings
+    if limiter is None:
+        return True
+    try:
+        wait = await limiter.acquire(
+            f"budget:{c.user.telegram_id}", rate=st.search_per_minute / 60.0, capacity=st.search_burst
+        )
+    except RedisError:
+        return True
+    return wait <= 0
+
+
+def valid_target(price: Decimal) -> bool:
+    """Callback data can be forged by a modified client: never trust a price that came from a button."""
+    return Decimal("0") < price <= MAX_PRICE
 
 
 # ================================================================== step engine
@@ -496,10 +517,13 @@ async def pick_month(
     if month is None or month < _today().replace(day=1):
         await cb.answer(tr("invalid.date_in_past"), show_alert=True)
         return
-    await cb.answer()
-    await state.update_data(depart=month.isoformat(), mode="month", hint_price=None)
     c = _ctx(cb, state, user, session, tr, deps)
     d = await state.get_data()
+    if d.get("purpose") == "search" and not await provider_budget_ok(c):
+        await cb.answer(tr("error.slow_down"), show_alert=True)
+        return
+    await cb.answer()
+    await state.update_data(depart=month.isoformat(), mode="month", hint_price=None)
     if d.get("purpose") == "search":
         await run_search(c)
     else:
@@ -654,10 +678,14 @@ async def target_button(
     tr,
     deps: Deps,
 ) -> None:
+    price = Decimal(callback_data.cents) / 100
+    if not valid_target(price):
+        await cb.answer(tr("error.stale"), show_alert=True)
+        return
     await cb.answer()
     await handle_target(
         _ctx(cb, state, user, session, tr, deps),
-        Decimal(callback_data.cents) / 100,
+        price,
         force=bool(callback_data.force),
     )
 
@@ -812,8 +840,11 @@ async def pick_explore_month(
     if month is None or month < _today().replace(day=1):
         await cb.answer(tr("invalid.date_in_past"), show_alert=True)
         return
-    await cb.answer()
     c = _ctx(cb, state, user, session, tr, deps)
+    if not await provider_budget_ok(c):
+        await cb.answer(tr("error.slow_down"), show_alert=True)
+        return
+    await cb.answer()
     d = await state.get_data()
     origin = _origin(d, c)
     stay = _stay(d)

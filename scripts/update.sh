@@ -18,6 +18,12 @@ fi
 
 echo "==> ${local_rev:0:7} -> ${remote_rev:0:7}"
 git pull --ff-only
+# v0.3.1+: Redis requires a password. Older .env files don't have one yet.
+if ! grep -qE '^REDIS_PASSWORD=.+' .env; then
+  pw="$(openssl rand -hex 16 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(16))')"
+  printf 'REDIS_PASSWORD=%s\n' "$pw" >> .env
+  echo "==> added a random REDIS_PASSWORD to .env"
+fi
 dc up -d --build
 echo "==> migration log:"
 dc logs migrate --tail=20 || true

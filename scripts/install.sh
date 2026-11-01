@@ -70,6 +70,7 @@ else
   set_env BOT_TOKEN "$token"
 
   set_env POSTGRES_PASSWORD "$(rand_hex)"
+  set_env REDIS_PASSWORD "$(rand_hex)"
   set_env WEBHOOK_SECRET "$(rand_hex)"
   set_env ENV prod
 
@@ -85,6 +86,13 @@ else
 fi
 
 [ -n "$(get_env BOT_TOKEN)" ] || die "BOT_TOKEN is empty in .env"
+if [ -z "$(get_env REDIS_PASSWORD)" ] || [ "$(get_env REDIS_PASSWORD)" = "change-me" ]; then
+  say "Adding a random REDIS_PASSWORD to .env (Redis now requires a password)"
+  set_env REDIS_PASSWORD "$(rand_hex)"
+fi
+if [ "$(get_env POSTGRES_PASSWORD)" = "change-me" ]; then
+  warn "POSTGRES_PASSWORD is still 'change-me'. For an existing database change it inside Postgres first (ALTER USER), then in .env."
+fi
 
 if [ "$DRY_RUN" = 1 ]; then
   say "DRY-RUN: .env is ready, Docker steps skipped."

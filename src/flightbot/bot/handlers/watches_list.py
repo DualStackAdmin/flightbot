@@ -10,7 +10,7 @@ from flightbot.bot import keyboards as kb
 from flightbot.bot.callbacks import EditTargetCb, MenuCb, WatchCb
 from flightbot.bot.formatting import describe_key
 from flightbot.bot.i18n import esc, fmt_price
-from flightbot.bot.parsing import parse_price
+from flightbot.bot.parsing import MAX_PRICE, parse_price
 from flightbot.bot.states import Flow
 from flightbot.bot.ui import edit_or_send
 from flightbot.core.clock import utcnow
@@ -133,8 +133,12 @@ async def _save_target(
 async def edit_target_button(
     cb: CallbackQuery, callback_data: EditTargetCb, state: FSMContext, user: User, session: AsyncSession, tr
 ) -> None:
+    price = Decimal(callback_data.cents) / 100
+    if not Decimal("0") < price <= MAX_PRICE:  # callback data can be forged by a modified client
+        await cb.answer(tr("error.stale"), show_alert=True)
+        return
     await cb.answer()
-    await _save_target(cb, state, user, session, tr, Decimal(callback_data.cents) / 100)
+    await _save_target(cb, state, user, session, tr, price)
 
 
 @router.message(Flow.edit_target, F.text, ~F.text.startswith("/"))

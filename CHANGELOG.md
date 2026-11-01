@@ -2,6 +2,24 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/). Versions: [SemVer](https://semver.org/) (0.x = pre-beta).
 
+## [0.3.1]
+### Security
+- Secrets are redacted from logs and Sentry events, including tracebacks (Telegram API URLs contain the bot token).
+- Docker: the bot's port is no longer published (internal `expose` only), Prometheus binds to `127.0.0.1`,
+  `POSTGRES_PASSWORD` is required, Redis requires `REDIS_PASSWORD`, app containers are read-only with all capabilities dropped and `no-new-privileges`.
+- New `tunnel` profile: Cloudflare Tunnel (`cloudflared`) publishes the webhook without opening inbound ports (docs/CLOUDFLARE.md).
+- Caddy only proxies `POST /telegram/webhook`.
+- Target prices from buttons are range-checked (callback data can be forged).
+- Provider booking links are only used for trusted hosts over HTTPS.
+- Per-user budget for `/search` and `/explore` (`SEARCH_BURST`, `SEARCH_PER_MINUTE`).
+- CI runs with read-only permissions; the deploy workflow can pin the server host key (`DEPLOY_KNOWN_HOSTS`).
+- `SECURITY.md` with the threat model, findings and open recommendations.
+### Upgrade notes
+- `update.sh` / `install.sh` add a random `REDIS_PASSWORD` to an existing `.env`. If `POSTGRES_PASSWORD` was never set,
+  the old database still uses the password `flightbot`: set `POSTGRES_PASSWORD=flightbot` in `.env` first, then change it
+  inside Postgres (`ALTER USER flightbot PASSWORD '...'`) and in `.env` together.
+- If you published port 8080 directly before, switch to the `tunnel` (recommended) or `webhook` profile.
+
 ## [0.3.0]
 ### Added
 - **Round trips by length of stay:** a trip step right after the destination: one way, round trip of 3/4/5/6/7/14 days, or exact dates on a calendar, plus a "direct only" toggle. The stay is part of the dedup signature (`watch_keys.stay_min/stay_max`, migration `0003`).

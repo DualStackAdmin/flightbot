@@ -5,7 +5,7 @@ Home-city departures, "cheapest day of the month" watches, and an "anywhere" sea
 
 `Python 3.12` · `aiogram 3` · `PostgreSQL 16` · `Redis 7` · `SQLAlchemy 2 (async)` · `Alembic` · `Docker`
 
-> **Status: v0.3.0, pre-beta.** The repository is currently private and proprietary (see [LICENSE](LICENSE)).
+> **Status: v0.3.1, pre-beta.** The repository is currently private and proprietary (see [LICENSE](LICENSE)).
 > Choose a license before making it public, and read the note on the affiliate marker in [Configuration](#configuration).
 > See the [CHANGELOG](CHANGELOG.md) and [`docs/LAUNCH_CHECKLIST.md`](docs/LAUNCH_CHECKLIST.md).
 
@@ -50,7 +50,8 @@ make migrate
 python -m flightbot.bot        # in one terminal
 python -m flightbot.workers    # in another (poller + broadcaster + janitor)
 ```
-Webhook + automatic TLS: set `BOT_MODE=webhook`, `WEBHOOK_BASE_URL`, `WEBHOOK_SECRET` and `DOMAIN` in `.env`, then `docker compose --profile webhook up -d`.
+Webhook mode, recommended: **Cloudflare Tunnel** (no open ports, hidden server IP): set `BOT_MODE=webhook`, `WEBHOOK_BASE_URL` and `TUNNEL_TOKEN`, then `docker compose --profile tunnel up -d` (see [`docs/CLOUDFLARE.md`](docs/CLOUDFLARE.md)).
+Alternative: Caddy with automatic TLS (`DOMAIN`, `docker compose --profile webhook up -d`, opens ports 80/443).
 Prometheus: `--profile monitoring`.
 
 ## Bot commands
@@ -107,6 +108,9 @@ The bot end-to-end tests drive the UI in Azerbaijani, so their assertions intent
 
 ## Security
 
+See [`SECURITY.md`](SECURITY.md) for the threat model, the v0.3.1 review and open recommendations, and [`docs/CLOUDFLARE.md`](docs/CLOUDFLARE.md) for edge protection.
+
+
 - `.env` (tokens, passwords) is **never** committed (`.gitignore`); `install.sh` creates it with `chmod 600`.
 - The repo should stay **private** until you decide otherwise: `./scripts/publish_to_github.sh` creates it private, aborts if it is public, and scans tracked files for tokens before pushing.
 - Give the server a **read-only** deploy key (`docs/DEPLOY.md`) and use a separate SSH key for CI/CD.
@@ -149,6 +153,8 @@ docs/          # spec, architecture, ADRs, runbook, deploy, launch checklist, ro
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | Architecture decision records (ADRs) and their reasons |
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Runbook: metrics, alerts, incident scenarios, backups |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Private GitHub repo and Linux server setup |
+| [`docs/CLOUDFLARE.md`](docs/CLOUDFLARE.md) | Cloudflare Tunnel, WAF rules, Access, server firewall |
+| [`SECURITY.md`](SECURITY.md) | Threat model, security review, recommendations |
 | [`docs/LAUNCH_CHECKLIST.md`](docs/LAUNCH_CHECKLIST.md) | What to verify with real tokens before launch |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Next steps and known limitations |
 

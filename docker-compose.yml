@@ -1,23 +1,39 @@
-# One command: cp .env.example .env && docker compose up -d --build
-# Webhook + TLS:      docker compose --profile webhook up -d
-# Prometheus:         docker compose --profile monitoring up -d
+# One command: ./scripts/install.sh   (or: cp .env.example .env, fill it in, docker compose up -d --build)
+# Public webhook via Cloudflare Tunnel (recommended, no open ports):  docker compose --profile tunnel up -d
+# Public webhook via Caddy with your own TLS (opens 80/443):         docker compose --profile webhook up -d
+# Prometheus (bound to localhost only):                              docker compose --profile monitoring up -d
+#
+# Security defaults: no service publishes a port to the internet, Postgres/Redis require passwords from .env,
+# app containers run read-only, as a non-root user, without Linux capabilities and without privilege escalation.
 name: flightbot
 
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
 x-app: &app
+  <<: *hardening
   build: .
   env_file: .env
   environment: &app-env
-    DATABASE_URL: postgresql+asyncpg://flightbot:${POSTGRES_PASSWORD:-flightbot}@postgres:5432/flightbot
-    REDIS_URL: redis://redis:6379/0
+    DATABASE_URL: postgresql+asyncpg://flightbot:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/flightbot
+    REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379/0
     LOG_JSON: "true"
+  read_only: true
+  tmpfs:
+    - /tmp
   restart: unless-stopped
 
 services:
   postgres:
     image: postgres:16-alpine
+    security_opt:
+      - no-new-privileges:true
     environment:
       POSTGRES_USER: flightbot
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flightbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: flightbot
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -32,11 +48,18 @@ services:
   # volatile-lru: only keys with a TTL can be evicted (all of our keys have one).
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    command:
+      - sh
+      - -c
+      - exec redis-server --requirepass "$$REDIS_PASSWORD" --appendonly yes --maxmemory 256mb --maxmemory-policy volatile-lru
     volumes:
       - redisdata:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -50,11 +73,13 @@ services:
       postgres:
         condition: service_healthy
 
+  # The webhook server listens on 8080 inside the Docker network only (no published port).
+  # cloudflared or caddy reach it as http://bot:8080.
   bot:
     <<: *app
     command: ["python", "-m", "flightbot.bot"]
-    ports:
-      - "8080:8080"
+    expose:
+      - "8080"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -82,6 +107,22 @@ services:
       timeout: 5s
       retries: 3
 
+  # Cloudflare Tunnel: an outbound-only connection to Cloudflare. The server needs no open inbound ports and its IP
+  # stays hidden. Configure the public hostname -> http://bot:8080 in the Cloudflare dashboard (docs/CLOUDFLARE.md).
+  # TODO: pin a specific cloudflared version tag (check Docker Hub) instead of "latest".
+  cloudflared:
+    <<: *hardening
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN for the tunnel profile}
+    read_only: true
+    depends_on:
+      - bot
+    restart: unless-stopped
+
+  # Alternative to the tunnel: Caddy with automatic Let's Encrypt TLS (publishes ports 80/443).
   caddy:
     image: caddy:2
     profiles: ["webhook"]
@@ -104,7 +145,7 @@ services:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./deploy/alerts.yml:/etc/prometheus/alerts.yml:ro
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"   # localhost only: reach it with an SSH tunnel or Cloudflare Access, never publicly
     depends_on:
       - bot
       - worker

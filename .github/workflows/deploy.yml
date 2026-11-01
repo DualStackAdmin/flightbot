@@ -1,6 +1,7 @@
 # Optional automatic deploy: after a push to main and a green CI run, ./scripts/update.sh runs on the server.
 # To enable: GitHub repo -> Settings -> Secrets and variables -> Actions:
-#   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY (private key), DEPLOY_PATH (e.g. /opt/flightbot)
+#   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY (private key), DEPLOY_PATH (e.g. /opt/flightbot),
+#   DEPLOY_KNOWN_HOSTS (output of `ssh-keyscan <host>`; pins the server key, prevents man-in-the-middle)
 # If the secrets are not set the job is skipped silently.
 name: Deploy
 on:
@@ -9,6 +10,9 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
@@ -22,6 +26,7 @@ jobs:
           USER_NAME: ${{ secrets.DEPLOY_USER }}
           KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           APP_PATH: ${{ secrets.DEPLOY_PATH }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           if [ -z "$HOST" ] || [ -z "$KEY" ]; then
             echo "DEPLOY_* secrets are not set, deploy skipped."
@@ -30,5 +35,12 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$USER_NAME@$HOST" \
+          if [ -n "$KNOWN_HOSTS" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+            HOSTCHECK=yes
+          else
+            echo "::warning::DEPLOY_KNOWN_HOSTS is not set: trusting the server key on first use"
+            HOSTCHECK=accept-new
+          fi
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=$HOSTCHECK "$USER_NAME@$HOST" \
             "cd '${APP_PATH:-/opt/flightbot}' && ./scripts/update.sh"

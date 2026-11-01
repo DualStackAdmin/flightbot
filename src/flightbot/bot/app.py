@@ -24,12 +24,13 @@ from flightbot.bot.i18n import SUPPORTED, t
 from flightbot.bot.middlewares import DbSessionMiddleware, ThrottlingMiddleware, UserMiddleware
 from flightbot.config import Settings, get_settings
 from flightbot.db.session import create_engine, create_sessionmaker
-from flightbot.logging import get_logger, setup_logging
+from flightbot.logging import get_logger, sentry_before_send, setup_logging
 from flightbot.metrics import start_metrics_server
 from flightbot.providers.base import PriceProvider
 from flightbot.providers.factory import build_http_client, build_names, build_places, build_provider
 from flightbot.providers.names import PlaceNames
 from flightbot.providers.places import PlacesProvider
+from flightbot.ratelimit import TokenBucket
 
 log = get_logger(__name__)
 COMMANDS = ("new", "explore", "list", "search", "settings", "help", "delete", "cancel")
@@ -61,7 +62,9 @@ def create_dispatcher(
     storage = RedisStorage(
         redis, key_builder=DefaultKeyBuilder(prefix="fsm"), state_ttl=FSM_TTL, data_ttl=FSM_TTL
     )
-    deps = Deps(provider, places, names or PlaceNames(None, None, remote=False), settings)
+    deps = Deps(
+        provider, places, names or PlaceNames(None, None, remote=False), settings, limiter=TokenBucket(redis)
+    )
     dp = Dispatcher(storage=storage, settings=settings, deps=deps)
     # Order matters: throttle (cheap) -> DB session -> user
     dp.update.outer_middleware(ThrottlingMiddleware(redis, rate=throttle[0], burst=throttle[1]))
@@ -147,14 +150,28 @@ async def run_webhook(
 
 async def amain() -> None:
     settings = get_settings()
-    setup_logging(settings.log_level, settings.log_json)
+    setup_logging(
+        settings.log_level,
+        settings.log_json,
+        secrets=[
+            settings.bot_token.get_secret_value(),
+            settings.travelpayouts_token.get_secret_value(),
+            settings.webhook_secret.get_secret_value(),
+        ],
+    )
     token = settings.bot_token.get_secret_value()
     if not token:
         raise SystemExit("BOT_TOKEN is not set (see the .env file)")
     if settings.sentry_dsn:
         import sentry_sdk
 
-        sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.env, release=__version__)
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            environment=settings.env,
+            release=__version__,
+            send_default_pii=False,
+            before_send=sentry_before_send,
+        )
     start_metrics_server(settings.metrics_port)
 
     engine = create_engine(settings)
